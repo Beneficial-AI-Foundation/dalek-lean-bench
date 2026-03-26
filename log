@@ -1,0 +1,2 @@
+(base) zhang-liao@zhang-liao-Legion-Y7000-IRX9:~/dalek-lean-bench$ claude --print --output-format stream-json --verbose  "check the number of lean files" 2>&1 
+
