@@ -372,6 +372,8 @@ def evaluate_one(
         "agent_time_s": None,
         "agent_exit_code": None,
         "agent_timed_out": False,
+        "agent_stdout": None,
+        "agent_stderr": None,
         "build_time_s": None,
         "build_stdout": "",
         "build_stderr": "",
@@ -398,6 +400,8 @@ def evaluate_one(
         result["agent_time_s"]    = agent_res["time_s"]
         result["agent_exit_code"] = agent_res["exit_code"]
         result["agent_timed_out"] = agent_res["timed_out"]
+        result["agent_stdout"]    = agent_res["stdout"]
+        result["agent_stderr"]    = agent_res["stderr"]
 
         if agent_res["timed_out"]:
             result["error"] = "agent timed out"
