@@ -34,7 +34,9 @@ Environment variables:
 
 import argparse
 import json
+import os
 import re
+import shutil
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -42,6 +44,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# Content-addressed per-package cache shared across all worktrees.
+# Layout: PACKAGE_CACHE_DIR/<pkg-name>/<rev>/
+PACKAGE_CACHE_DIR = Path.home() / ".cache" / "dalek-lake-packages"
 
 DEFAULT_BUDGET_USD = 0.50   # max spend per entry
 DEFAULT_TIMEOUT    = 600    # hard wall-clock limit per entry (seconds)
@@ -95,26 +101,118 @@ def remove_worktree(worktree: Path) -> None:
     )
 
 
-def _ensure_lake_cache_symlink(worktree: Path) -> None:
-    """Symlink only .lake/packages (external deps) into the worktree.
+def _read_manifest(commit: str) -> dict | None:
+    """Read lake-manifest.json from a git commit. Returns None on failure."""
+    out = subprocess.run(
+        ["git", "show", f"{commit}:lake-manifest.json"],
+        cwd=REPO_ROOT, capture_output=True, text=True,
+    )
+    if out.returncode != 0:
+        return None
+    return json.loads(out.stdout)
 
-    We intentionally do NOT share .lake/build: those .olean files were compiled
-    from the current HEAD and would cause false-positive cache hits when the
-    worktree is checked out at an older commit_before.  Each worktree builds
-    its own project .oleans from scratch; parallel runs compensate for the cost.
+
+def _setup_worktree_packages(worktree: Path, commit: str) -> None:
+    """Set up .lake/packages in the worktree using the content-addressed cache.
+
+    For each package listed in the commit's lake-manifest.json:
+    - Cache hit  → symlink PACKAGE_CACHE_DIR/<name>/<rev>/ into the worktree
+    - Cache miss → leave the slot empty; Lake will download and compile it
+
+    We do NOT share .lake/build to avoid false-positive cache hits from
+    .olean files compiled at HEAD being used for an older commit_before.
     """
-    repo_lake = REPO_ROOT / ".lake"
-    if not repo_lake.exists():
+    manifest = _read_manifest(commit)
+    if manifest is None:
         return
 
-    wt_lake = worktree / ".lake"
-    wt_lake.mkdir(exist_ok=True)
+    # packagesDir is relative to the repo root (e.g. ".lake/packages")
+    packages_dir = manifest.get("packagesDir", ".lake/packages")
+    wt_packages = worktree / packages_dir
+    wt_packages.mkdir(parents=True, exist_ok=True)
 
-    repo_packages = repo_lake / "packages"
-    if repo_packages.exists():
-        wt_packages = wt_lake / "packages"
-        if not wt_packages.exists():
-            wt_packages.symlink_to(repo_packages)
+    for pkg in manifest.get("packages", []):
+        name = pkg["name"]
+        rev  = pkg["rev"]
+        cache_path = PACKAGE_CACHE_DIR / name / rev
+        pkg_path   = wt_packages / name
+        if cache_path.exists() and not pkg_path.exists():
+            pkg_path.symlink_to(cache_path)
+
+
+def _populate_package_cache(worktree: Path, commit: str) -> None:
+    """After Lake has run, copy newly downloaded packages into the cache.
+
+    Only real directories (not symlinks) are candidates — symlinked ones are
+    already cached. Uses a temp-then-rename strategy so concurrent workers
+    writing the same package don't corrupt each other.
+    """
+    manifest = _read_manifest(commit)
+    if manifest is None:
+        return
+
+    packages_dir = manifest.get("packagesDir", ".lake/packages")
+    wt_packages = worktree / packages_dir
+
+    for pkg in manifest.get("packages", []):
+        name = pkg["name"]
+        rev  = pkg["rev"]
+        pkg_path   = wt_packages / name
+        cache_path = PACKAGE_CACHE_DIR / name / rev
+
+        # Skip if already cached or not yet downloaded by Lake
+        if cache_path.exists() or not pkg_path.exists() or pkg_path.is_symlink():
+            continue
+
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cache_path.parent / f"{rev}.tmp.{os.getpid()}"
+        try:
+            shutil.copytree(pkg_path, tmp, symlinks=True)
+            tmp.rename(cache_path)
+        except OSError:
+            # Another parallel worker already populated the cache — that's fine
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _seed_cache_from_head() -> None:
+    """Populate the package cache from HEAD's already-compiled .lake/packages.
+
+    This is a one-time bootstrap so the first batch of worktrees that share
+    HEAD's manifest version get instant cache hits without recompiling.
+    """
+    head_packages = REPO_ROOT / ".lake" / "packages"
+    if not head_packages.exists():
+        return
+
+    head_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, capture_output=True, text=True
+    ).stdout.strip()
+    manifest = _read_manifest(head_commit)
+    if manifest is None:
+        return
+
+    packages_dir = manifest.get("packagesDir", ".lake/packages")
+    src_packages = REPO_ROOT / packages_dir
+
+    seeded = 0
+    for pkg in manifest.get("packages", []):
+        name = pkg["name"]
+        rev  = pkg["rev"]
+        src  = src_packages / name
+        cache_path = PACKAGE_CACHE_DIR / name / rev
+        if cache_path.exists() or not src.exists() or src.is_symlink():
+            continue
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cache_path.parent / f"{rev}.tmp.seed"
+        try:
+            shutil.copytree(src, tmp, symlinks=True)
+            tmp.rename(cache_path)
+            seeded += 1
+        except OSError:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    if seeded:
+        print(f"Cache: seeded {seeded} packages from HEAD into {PACKAGE_CACHE_DIR}")
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +220,6 @@ def _ensure_lake_cache_symlink(worktree: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def run_lake_build(worktree: Path, file_path: str, timeout: int = 300) -> dict:
-    _ensure_lake_cache_symlink(worktree)
     module = file_path.replace("/", ".").removesuffix(".lean")
     t0 = time.time()
     try:
@@ -164,8 +261,6 @@ def run_claude_code_agent(
 
     Returns a dict with keys: exit_code, stdout, stderr, time_s.
     """
-    _ensure_lake_cache_symlink(worktree)
-
     module = entry["file_path"].replace("/", ".").removesuffix(".lean")
     prompt = AGENT_PROMPT_TEMPLATE.format(
         file_path=entry["file_path"],
@@ -290,6 +385,9 @@ def evaluate_one(
         return result
 
     try:
+        # ── Step 1b: symlink cached packages ─────────────────────────────────
+        _setup_worktree_packages(worktree, entry["commit_before"])
+
         # ── Step 2: run Claude Code agent ────────────────────────────────────
         agent_res = run_claude_code_agent(entry, worktree, budget_usd, timeout, model)
         result["agent_time_s"]    = agent_res["time_s"]
@@ -313,6 +411,9 @@ def evaluate_one(
         result["build_time_s"]  = build_res["time_s"]
         result["build_stdout"]  = build_res["stdout"]
         result["build_stderr"]  = build_res["stderr"]
+
+        # ── Step 5: populate cache with newly compiled packages ───────────────
+        _populate_package_cache(worktree, entry["commit_before"])
 
     finally:
         remove_worktree(worktree)
@@ -382,6 +483,10 @@ def main() -> None:
 
     if args.limit:
         dataset = dataset[: args.limit]
+
+    # Seed the cache from the current HEAD's already-compiled packages so that
+    # worktrees sharing the same manifest version get instant cache hits.
+    _seed_cache_from_head()
 
     print(f"Model:      {args.model or '(claude default)'}")
     print(f"Dataset:    {dataset_path}  ({len(dataset)} entries)")
