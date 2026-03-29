@@ -95,11 +95,25 @@ def remove_worktree(worktree: Path) -> None:
 
 
 def _ensure_lake_cache_symlink(worktree: Path) -> None:
-    """Reuse REPO_ROOT/.lake so compiled dependencies don't need rebuilding."""
-    wt_lake = worktree / ".lake"
+    """Symlink only .lake/packages (external deps) into the worktree.
+
+    We intentionally do NOT share .lake/build: those .olean files were compiled
+    from the current HEAD and would cause false-positive cache hits when the
+    worktree is checked out at an older commit_before.  Each worktree builds
+    its own project .oleans from scratch; parallel runs compensate for the cost.
+    """
     repo_lake = REPO_ROOT / ".lake"
-    if not wt_lake.exists() and repo_lake.exists():
-        wt_lake.symlink_to(repo_lake)
+    if not repo_lake.exists():
+        return
+
+    wt_lake = worktree / ".lake"
+    wt_lake.mkdir(exist_ok=True)
+
+    repo_packages = repo_lake / "packages"
+    if repo_packages.exists():
+        wt_packages = wt_lake / "packages"
+        if not wt_packages.exists():
+            wt_packages.symlink_to(repo_packages)
 
 
 # ---------------------------------------------------------------------------
