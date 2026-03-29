@@ -49,7 +49,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Layout: PACKAGE_CACHE_DIR/<pkg-name>/<rev>/
 PACKAGE_CACHE_DIR = Path.home() / ".cache" / "dalek-lake-packages"
 
-DEFAULT_BUDGET_USD = 0.50   # max spend per entry
+DEFAULT_BUDGET_USD = 3.00   # max spend per entry
 DEFAULT_TIMEOUT    = 600    # hard wall-clock limit per entry (seconds)
 
 AGENT_PROMPT_TEMPLATE = """\
@@ -59,16 +59,11 @@ the curve25519-dalek Rust library).
 Your task: replace the `sorry` in `{file_path}` for theorem `{theorem_name}` \
 with a correct proof.
 
-=== Theorem ===
-{formal_statement}
-  sorry
-
 === Workflow ===
 1. Read `{file_path}` to understand the context.
-2. Search for similar proved theorems nearby to find tactic patterns \
-   (use Grep or Bash with rg).
+2. Search for similar proved theorems nearby to find tactic patterns.
 3. Edit the file: replace `sorry` with your proof attempt.
-4. Run `lake build {module}` and read the compiler output.
+4. Run `nice -n 19 lake build {module}` and read the compiler output.
 5. If there are errors, fix them and repeat from step 4.
 6. Stop when `lake build {module}` exits with code 0 (no errors).
 
@@ -282,6 +277,7 @@ def run_claude_code_agent(
         "--allowedTools", "Bash,Read,Write,Edit,Glob,Grep",
         "--max-budget-usd", str(budget_usd),
         "--output-format", "stream-json",
+        "--verbose",
         prompt,                            # positional argument, not --prompt
     ]
     if model:
