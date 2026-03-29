@@ -230,8 +230,13 @@ def run_lake_build(worktree: Path, file_path: str, timeout: int = 300) -> dict:
             text=True,
             timeout=timeout,
         )
+        # Lake exits 0 even when `sorry` is present (it's a warning, not an error).
+        # A true success requires: exit code 0 AND no sorry in the target file.
+        build_ok = proc.returncode == 0
+        target = worktree / file_path
+        has_sorry = target.exists() and "sorry" in target.read_text(encoding="utf-8", errors="replace")
         return {
-            "success": proc.returncode == 0,
+            "success": build_ok and not has_sorry,
             "time_s": round(time.time() - t0, 2),
             "stdout": proc.stdout[-3000:],
             "stderr": proc.stderr[-3000:],
@@ -277,7 +282,7 @@ def run_claude_code_agent(
         "--allowedTools", "Bash,Read,Write,Edit,Glob,Grep",
         "--max-budget-usd", str(budget_usd),
         "--output-format", "json",
-        "--prompt", prompt,
+        prompt,                            # positional argument, not --prompt
     ]
     if model:
         cmd += ["--model", model]
