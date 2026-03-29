@@ -37,6 +37,7 @@ import json
 import re
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -344,6 +345,8 @@ def main() -> None:
                         help=f"Max API spend per entry in USD (default: {DEFAULT_BUDGET_USD})")
     parser.add_argument("--resume", action="store_true",
                         help="Append to --output and skip already-evaluated IDs")
+    parser.add_argument("--parallel", type=int, default=1, metavar="N",
+                        help="Number of entries to evaluate concurrently (default: 1)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Skip claude calls and lake build")
     args = parser.parse_args()
@@ -385,43 +388,50 @@ def main() -> None:
     print(f"Output:     {output_path}")
     print(f"Timeout:    {args.timeout}s per entry")
     print(f"Budget:     ${args.budget_usd:.2f} per entry")
+    print(f"Parallel:   {args.parallel}")
     if args.dry_run:
         print("Mode:       DRY RUN")
     print()
 
     n_pass = n_fail = 0
+    total = len(dataset)
+    width = len(str(total))
+
+    def _run(entry: dict) -> dict:
+        return evaluate_one(
+            entry,
+            budget_usd=args.budget_usd,
+            timeout=args.timeout,
+            model=args.model,
+            dry_run=args.dry_run,
+        )
 
     with open(output_path, "a", encoding="utf-8") as out_f:
-        for i, entry in enumerate(dataset):
-            print(
-                f"[{i+1:>{len(str(len(dataset)))}}/{len(dataset)}] "
-                f"{entry['id']} ({entry['theorem_name']})...",
-                end=" ", flush=True,
-            )
-            res = evaluate_one(
-                entry,
-                budget_usd=args.budget_usd,
-                timeout=args.timeout,
-                model=args.model,
-                dry_run=args.dry_run,
-            )
+        with ThreadPoolExecutor(max_workers=args.parallel) as pool:
+            futures = {pool.submit(_run, entry): entry for entry in dataset}
+            completed = 0
+            for fut in as_completed(futures):
+                completed += 1
+                res = fut.result()
 
-            if res["success"]:
-                n_pass += 1
-                status = "PASS"
-            else:
-                n_fail += 1
-                err_hint = res.get("error") or ""
-                status = f"FAIL  {err_hint[:60]}"
+                if res["success"]:
+                    n_pass += 1
+                    status = "PASS"
+                else:
+                    n_fail += 1
+                    err_hint = res.get("error") or ""
+                    status = f"FAIL  {err_hint[:60]}"
 
-            print(
-                f"{status}  "
-                f"agent={res['agent_time_s']}s  "
-                f"build={res['build_time_s']}s"
-            )
+                print(
+                    f"[{completed:>{width}}/{total}] "
+                    f"{res['id']} ({res['theorem_name']})  "
+                    f"{status}  "
+                    f"agent={res['agent_time_s']}s  "
+                    f"build={res['build_time_s']}s"
+                )
 
-            out_f.write(json.dumps(res, ensure_ascii=False) + "\n")
-            out_f.flush()
+                out_f.write(json.dumps(res, ensure_ascii=False) + "\n")
+                out_f.flush()
 
     total = n_pass + n_fail
     pct = f"{100 * n_pass / total:.1f}%" if total else "n/a"
