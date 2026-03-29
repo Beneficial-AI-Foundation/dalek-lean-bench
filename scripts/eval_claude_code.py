@@ -281,7 +281,7 @@ def run_claude_code_agent(
         "--dangerously-skip-permissions",  # worktree is isolated; no prompt dialogs
         "--allowedTools", "Bash,Read,Write,Edit,Glob,Grep",
         "--max-budget-usd", str(budget_usd),
-        "--output-format", "json",
+        "--output-format", "stream-json",
         prompt,                            # positional argument, not --prompt
     ]
     if model:
