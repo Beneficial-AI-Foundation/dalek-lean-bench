@@ -50,7 +50,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PACKAGE_CACHE_DIR = Path.home() / ".cache" / "dalek-lake-packages"
 
 DEFAULT_BUDGET_USD    = 3.00   # max spend per entry
-DEFAULT_TIMEOUT       = 600    # hard wall-clock limit for agent subprocess (seconds)
+DEFAULT_TIMEOUT       = 60    # hard wall-clock limit for agent subprocess (seconds)
 DEFAULT_BUILD_TIMEOUT = None   # no timeout for final verification build
 
 AGENT_PROMPT_TEMPLATE = """\
@@ -286,29 +286,36 @@ def run_claude_code_agent(
     if model:
         cmd += ["--model", model]
 
+    import tempfile
     t0 = time.time()
-    try:
-        proc = subprocess.run(
+    timed_out = False
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as out_f, \
+         tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as err_f:
+        proc = subprocess.Popen(
             cmd,
             cwd=str(worktree),
-            capture_output=True,
+            stdout=out_f,
+            stderr=err_f,
             text=True,
-            timeout=timeout,
         )
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            timed_out = True
+        out_f.seek(0)
+        err_f.seek(0)
+        stdout = out_f.read()
+        stderr = err_f.read()
+        if timed_out:
+            stderr += f"\nsubprocess TIMEOUT after {timeout}s"
         return {
-            "exit_code": proc.returncode,
-            "stdout": proc.stdout,
-            "stderr": proc.stderr,
+            "exit_code": proc.returncode if not timed_out else -1,
+            "stdout": stdout,
+            "stderr": stderr,
             "time_s": round(time.time() - t0, 2),
-            "timed_out": False,
-        }
-    except subprocess.TimeoutExpired:
-        return {
-            "exit_code": -1,
-            "stdout": "",
-            "stderr": f"subprocess TIMEOUT after {timeout}s",
-            "time_s": round(time.time() - t0, 2),
-            "timed_out": True,
+            "timed_out": timed_out,
         }
 
 
