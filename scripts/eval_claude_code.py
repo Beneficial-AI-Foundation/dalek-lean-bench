@@ -65,7 +65,10 @@ with a correct proof.
 3. Edit the file: replace `sorry` with your proof attempt.
 4. Run `nice -n 19 lake build {module}` and read the compiler output.
 5. If there are errors, fix them and repeat from step 4.
-6. Stop when `nice -n 19 lake build {module}` exits with code 0 (no errors).
+6. Stop when the three conditions are satisfied
+  (1) `nice -n 19 lake build {module}` exits with code 0 (no errors), 
+  (2) the `sorry` has been replaced with a proof, 
+  (3) no new `sorry` has been introduced.
 
 Only edit `{file_path}`. \
 Do NOT modify any other file.
