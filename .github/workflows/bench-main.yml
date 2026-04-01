@@ -1,8 +1,8 @@
 name: Benchmark (Main)
 
 on:
-  push:
   workflow_dispatch:
+    # CI disabled: this is a benchmark repo
 
 permissions:
   contents: read

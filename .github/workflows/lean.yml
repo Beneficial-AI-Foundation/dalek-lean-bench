@@ -4,23 +4,8 @@ name: Lean Verification
 # It ensures that all proofs compile and that the formal verification remains valid.
 
 on:
-  push:
-    branches: [ '**' ]
-    paths:
-      - 'Curve25519Dalek/**'
-      - 'Utils/**'
-      - 'lakefile.toml'
-      - 'lean-toolchain'
-      - '.github/workflows/lean.yml'
-  pull_request:
-    branches: [ '**' ]
-    # paths:
-    #   - 'Curve25519Dalek/**'
-    #   - 'Utils/**'
-    #   - 'lakefile.toml'
-    #   - 'lean-toolchain'
-    #   - '.github/workflows/lean.yml'
   workflow_dispatch:
+    # CI disabled: this is a benchmark repo
 
 env:
   LEAN_ABORT_ON_PANIC: 1

@@ -4,10 +4,8 @@ name: Check for Typos
 # using the typos tool (https://github.com/crate-ci/typos).
 
 on:
-  push:
-    branches: [ '**' ]
-  pull_request:
-    branches: [ '**' ]
+  workflow_dispatch:
+    # CI disabled: this is a benchmark repo
 
 jobs:
   typos:

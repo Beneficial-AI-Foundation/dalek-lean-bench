@@ -1,17 +1,8 @@
 name: Lean Call Graph
 
 on:
-  push:
-    branches: [master, la/add_callgraph]
-    paths:
-      - 'Curve25519Dalek/**'
-      - 'Curve25519Dalek.lean'
-      - 'Utils/**'
-      - 'Utils.lean'
-      - 'lakefile.toml'
-      - 'lean-toolchain'
-      - '.github/workflows/callgraph.yml'
   workflow_dispatch:
+    # CI disabled: this is a benchmark repo
 
 permissions:
   contents: read

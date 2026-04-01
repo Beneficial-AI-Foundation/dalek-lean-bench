@@ -4,9 +4,8 @@ name: Check mk_all is up to date
 # is kept up to date. If running mk_all would cause changes, the workflow fails.
 
 on:
-  pull_request:
-    branches: [ '**' ]
   workflow_dispatch:
+    # CI disabled: this is a benchmark repo
 
 env:
   LEAN_ABORT_ON_PANIC: 1

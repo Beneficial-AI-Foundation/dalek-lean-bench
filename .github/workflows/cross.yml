@@ -1,10 +1,8 @@
 name: Cross
 
 on:
-  push:
-    branches: [ '**' ]
-  pull_request:
-    branches: [ '**' ]
+  workflow_dispatch:
+    # CI disabled: this is a benchmark repo
 
 env:
   CARGO_TERM_COLOR: always

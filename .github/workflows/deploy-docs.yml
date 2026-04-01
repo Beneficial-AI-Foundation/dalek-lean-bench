@@ -1,25 +1,9 @@
 name: Deploy VitePress site to GitHub Pages
 
 on:
-  # Runs on pushes targeting the default branch
-  push:
-    branches: [master]
-
-  # Check build on pull requests
-  pull_request:
-
-  # Run when issues are created, edited, or updated
-  issues:
-    types: [opened, edited, deleted, closed, reopened, labeled, unlabeled]
-
-  # Run when pull requests are opened or edited
-  pull_request_target:
-    types: [opened, edited, synchronize, reopened]
-
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
+    # CI disabled: this is a benchmark repo
 
-# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
   contents: read
   pages: write

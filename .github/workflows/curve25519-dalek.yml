@@ -1,16 +1,8 @@
 name: curve25519 Rust
 
 on:
-  push:
-    branches: [ '**' ]
-    # paths:
-    #   - 'curve25519-dalek/**'
-    #   - '.github/workflows/curve25519-dalek.yml'
-  pull_request:
-    branches: [ '**' ]
-    # paths:
-    #   - 'curve25519-dalek/**'
-    #   - '.github/workflows/curve25519-dalek.yml'
+  workflow_dispatch:
+    # CI disabled: this is a benchmark repo
 
 defaults:
   run:

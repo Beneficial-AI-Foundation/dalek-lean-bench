@@ -9,8 +9,8 @@ name: Modifications Diff
 # src-modifications.diff, ensuring the documentation of changes is always up to date.
 
 on:
-  pull_request:
-  push:
+  workflow_dispatch:
+    # CI disabled: this is a benchmark repo
 
 jobs:
   modifications:

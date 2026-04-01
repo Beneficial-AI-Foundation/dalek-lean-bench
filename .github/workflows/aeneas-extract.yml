@@ -5,17 +5,8 @@ name: Aeneas Extract Check
 # from the committed versions.
 
 on:
-  push:
-    branches: [ '**' ]
-    paths:
-      - 'curve25519-dalek/**'
-      - 'aeneas-config.yml'
-      - 'Curve25519Dalek/Funs.lean'
-      - 'Curve25519Dalek/Types.lean'
-      - '.github/workflows/aeneas-extract.yml'
-  pull_request:
-    branches: [ '**' ]
   workflow_dispatch:
+    # CI disabled: this is a benchmark repo
 
 jobs:
   extract-check:
