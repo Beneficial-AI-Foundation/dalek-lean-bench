@@ -49,8 +49,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Layout: PACKAGE_CACHE_DIR/<pkg-name>/<rev>/
 PACKAGE_CACHE_DIR = Path.home() / ".cache" / "dalek-lake-packages"
 
-DEFAULT_BUDGET_USD = 3.00   # max spend per entry
-DEFAULT_TIMEOUT    = 600    # hard wall-clock limit per entry (seconds)
+DEFAULT_BUDGET_USD    = 3.00   # max spend per entry
+DEFAULT_TIMEOUT       = 600    # hard wall-clock limit for agent subprocess (seconds)
+DEFAULT_BUILD_TIMEOUT = None   # no timeout for final verification build
 
 AGENT_PROMPT_TEMPLATE = """\
 You are inside a Lean 4 project (dalek-lean-bench, a formal verification of \
@@ -216,7 +217,7 @@ def _seed_cache_from_head() -> None:
 # Final verification build (authoritative pass/fail)
 # ---------------------------------------------------------------------------
 
-def run_lake_build(worktree: Path, file_path: str, timeout: int = 300) -> dict:
+def run_lake_build(worktree: Path, file_path: str, timeout: int | None = None) -> dict:
     module = file_path.replace("/", ".").removesuffix(".lean")
     t0 = time.time()
     try:
@@ -243,7 +244,7 @@ def run_lake_build(worktree: Path, file_path: str, timeout: int = 300) -> dict:
             "success": False,
             "time_s": round(time.time() - t0, 2),
             "stdout": "",
-            "stderr": f"TIMEOUT after {timeout}s",
+            "stderr": f"build TIMEOUT after {timeout}s",
         }
 
 
@@ -355,6 +356,7 @@ def evaluate_one(
     entry: dict,
     budget_usd: float,
     timeout: int,
+    build_timeout: int,
     model: str | None,
     dry_run: bool,
 ) -> dict:
@@ -413,7 +415,7 @@ def evaluate_one(
         )
 
         # ── Step 4: authoritative lake build ─────────────────────────────────
-        build_res = run_lake_build(worktree, entry["file_path"], timeout=120)
+        build_res = run_lake_build(worktree, entry["file_path"], timeout=build_timeout)
         result["success"]       = build_res["success"]
         result["build_time_s"]  = build_res["time_s"]
         result["build_stdout"]  = build_res["stdout"]
@@ -448,7 +450,9 @@ def main() -> None:
     parser.add_argument("--ids", nargs="+", metavar="ID",
                         help="Evaluate only these entry IDs")
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT,
-                        help=f"Wall-clock seconds per entry (default: {DEFAULT_TIMEOUT})")
+                        help=f"Wall-clock seconds for agent subprocess (default: {DEFAULT_TIMEOUT})")
+    parser.add_argument("--build-timeout", type=int, default=DEFAULT_BUILD_TIMEOUT,
+                        help="Wall-clock seconds for final verification build (default: no timeout)")
     parser.add_argument("--budget-usd", type=float, default=DEFAULT_BUDGET_USD,
                         help=f"Max API spend per entry in USD (default: {DEFAULT_BUDGET_USD})")
     parser.add_argument("--resume", action="store_true",
@@ -498,7 +502,8 @@ def main() -> None:
     print(f"Model:      {args.model or '(claude default)'}")
     print(f"Dataset:    {dataset_path}  ({len(dataset)} entries)")
     print(f"Output:     {output_path}")
-    print(f"Timeout:    {args.timeout}s per entry")
+    build_timeout_str = f"{args.build_timeout}s" if args.build_timeout else "none"
+    print(f"Timeout:    {args.timeout}s (agent)  /  {build_timeout_str} (build)")
     print(f"Budget:     ${args.budget_usd:.2f} per entry")
     print(f"Parallel:   {args.parallel}")
     if args.dry_run:
@@ -514,6 +519,7 @@ def main() -> None:
             entry,
             budget_usd=args.budget_usd,
             timeout=args.timeout,
+            build_timeout=args.build_timeout,
             model=args.model,
             dry_run=args.dry_run,
         )
