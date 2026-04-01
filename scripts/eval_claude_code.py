@@ -61,11 +61,10 @@ with a correct proof.
 
 === Workflow ===
 1. Read `{file_path}` to understand the context.
-2. Search for similar proved theorems nearby to find tactic patterns.
-3. Edit the file: replace `sorry` with your proof attempt.
-4. Run `nice -n 19 lake build {module}` and read the compiler output.
-5. If there are errors, fix them and repeat from step 4.
-6. Stop when the three conditions are satisfied
+2. Edit the file: replace `sorry` with your proof attempt.
+3. Run `nice -n 19 lake build {module}` and read the compiler output.
+4. If there are errors, fix them and repeat from step 2.
+5. Stop when the three conditions are satisfied
   (1) `nice -n 19 lake build {module}` exits with code 0 (no errors), 
   (2) the `sorry` has been replaced with a proof, 
   (3) no new `sorry` has been introduced.
@@ -236,8 +235,8 @@ def run_lake_build(worktree: Path, file_path: str, timeout: int = 300) -> dict:
         return {
             "success": build_ok and not has_sorry,
             "time_s": round(time.time() - t0, 2),
-            "stdout": proc.stdout[-3000:],
-            "stderr": proc.stderr[-3000:],
+            "stdout": "\n".join(proc.stdout.splitlines()[:300]),
+            "stderr": "\n".join(proc.stderr.splitlines()[:300]),
         }
     except subprocess.TimeoutExpired:
         return {
@@ -297,8 +296,8 @@ def run_claude_code_agent(
         )
         return {
             "exit_code": proc.returncode,
-            "stdout": proc.stdout[-5000:],
-            "stderr": proc.stderr[-2000:],
+            "stdout": proc.stdout,
+            "stderr": proc.stderr,
             "time_s": round(time.time() - t0, 2),
             "timed_out": False,
         }
