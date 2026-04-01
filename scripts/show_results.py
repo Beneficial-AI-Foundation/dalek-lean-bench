@@ -44,8 +44,13 @@ def summarize_agent_stdout(stdout: str) -> str:
         return "(no output)"
 
     events = extract_agent_events(stdout)
+    if not events:
+        return "(could not parse stream-json)"
+
     parts = []
     retries = 0
+    # Map tool_use_id -> tool name for matching results
+    pending_tools: dict[str, str] = {}
 
     for ev in events:
         t = ev.get("type")
@@ -57,10 +62,47 @@ def summarize_agent_stdout(stdout: str) -> str:
         elif t == "assistant":
             msg = ev.get("message", {})
             for block in msg.get("content", []):
-                if block.get("type") == "text":
+                btype = block.get("type")
+                if btype == "text":
                     text = block["text"].strip()
                     if text:
                         parts.append(f"[assistant] {text}")
+                elif btype == "tool_use":
+                    tool_id = block.get("id", "")
+                    tool_name = block.get("name", "?")
+                    inp = block.get("input", {})
+                    pending_tools[tool_id] = tool_name
+                    # Show a concise summary of the call
+                    if tool_name == "Bash":
+                        desc = inp.get("description") or inp.get("command", "")[:80]
+                        parts.append(f"[tool_use] Bash: {desc}")
+                    elif tool_name in ("Read", "Write", "Edit", "Glob", "Grep"):
+                        key = next(iter(inp), None)
+                        val = inp.get(key, "") if key else ""
+                        parts.append(f"[tool_use] {tool_name}: {val}")
+                    else:
+                        inp_summary = ", ".join(f"{k}={str(v)[:40]}" for k, v in list(inp.items())[:3])
+                        parts.append(f"[tool_use] {tool_name}({inp_summary})")
+                # skip thinking blocks
+
+        elif t == "user":
+            msg = ev.get("message", {})
+            content = msg.get("content", [])
+            if isinstance(content, list):
+                for block in content:
+                    if block.get("type") == "tool_result":
+                        tool_id = block.get("tool_use_id", "")
+                        tool_name = pending_tools.pop(tool_id, "?")
+                        result_content = block.get("content", "")
+                        if isinstance(result_content, list):
+                            result_content = " ".join(
+                                c.get("text", "") for c in result_content if c.get("type") == "text"
+                            )
+                        result_str = str(result_content).strip()
+                        # Truncate long results
+                        if len(result_str) > 300:
+                            result_str = result_str[:300] + " ..."
+                        parts.append(f"[tool_result/{tool_name}] {result_str}")
 
         elif t == "result":
             result_text = ev.get("result", "").strip()
@@ -72,7 +114,7 @@ def summarize_agent_stdout(stdout: str) -> str:
     if retries:
         parts.insert(0, f"[retries] api_retry x{retries}")
 
-    return "\n\n".join(parts) if parts else "(could not parse stream-json)"
+    return "\n\n".join(parts) if parts else "(no parseable content in stream-json)"
 
 
 # ---------------------------------------------------------------------------
