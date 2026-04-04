@@ -52,26 +52,16 @@ def get_file_at(commit: str, filepath: str) -> str | None:
     return r.stdout if r.returncode == 0 else None
 
 
-def get_non_merge_commits(branch_only: bool = False) -> list[tuple[str, str, str]]:
-    """Return list of (commit_hash, parent_hash, subject) for non-merge commits."""
+def get_non_merge_commits(branch_only: bool = False) -> list[tuple[str, str]]:
+    """Return list of (commit_hash, parent_hash) for non-merge commits."""
     ref = "HEAD" if branch_only else "--all"
-    out = git("log", ref, "--no-merges", "--pretty=format:%H %P %s", "--", "*.lean")
+    out = git("log", ref, "--no-merges", "--pretty=format:%H %P", "--", "*.lean")
     result = []
     for line in out.strip().splitlines():
-        parts = line.split(" ", 2)
-        if len(parts) >= 2 and parts[1].strip():
-            result.append((parts[0], parts[1], parts[2] if len(parts) > 2 else ""))
+        parts = line.split(" ", 1)
+        if len(parts) == 2 and parts[1].strip():
+            result.append((parts[0], parts[1].strip()))
     return result
-
-
-def get_commit_meta(commit_hash: str) -> dict:
-    out = git("log", "-1", "--pretty=format:%ae%n%ai%n%an", commit_hash)
-    parts = out.strip().splitlines()
-    return {
-        "author_email": parts[0] if len(parts) > 0 else "",
-        "date": parts[1] if len(parts) > 1 else "",
-        "author_name": parts[2] if len(parts) > 2 else "",
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -236,13 +226,12 @@ def extract_dataset(branch_only: bool = False) -> list[dict]:
     n_commits_processed = 0
     seen_ids: set[str] = set()  # deduplicate by (theorem_name, file_path)
 
-    for idx, (commit_hash, parent_hash, subject) in enumerate(commits):
+    for idx, (commit_hash, parent_hash) in enumerate(commits):
         file_map = files_with_net_sorry_removal(parent_hash, commit_hash)
         if not file_map:
             continue
 
         n_commits_processed += 1
-        meta = get_commit_meta(commit_hash)
 
         for filepath, n_sorry_removed in file_map.items():
             content_before = get_file_at(parent_hash, filepath)
@@ -278,15 +267,10 @@ def extract_dataset(branch_only: bool = False) -> list[dict]:
                     "theorem_name": thm["name"],
                     "file_path": filepath,
                     "commit_before": parent_hash,
-                    "commit_after": commit_hash,
-                    "commit_subject": subject,
-                    "commit_date": meta["date"],
-                    "author_email": meta["author_email"],
                     # Core dataset fields
                     "formal_statement": thm["statement"],
                     "proof": proof,
                     "full_theorem_with_sorry": thm["full_block"],
-                    "file_content_before": content_before,
                     # Metadata
                     "n_sorry_removed_in_commit": n_sorry_removed,
                     "proof_lines": len(proof.splitlines()),

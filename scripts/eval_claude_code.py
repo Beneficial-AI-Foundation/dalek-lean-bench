@@ -50,7 +50,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PACKAGE_CACHE_DIR = Path.home() / ".cache" / "dalek-lake-packages"
 
 DEFAULT_BUDGET_USD    = 3.00   # max spend per entry
-DEFAULT_TIMEOUT       = 60    # hard wall-clock limit for agent subprocess (seconds)
+DEFAULT_TIMEOUT       = 300    # hard wall-clock limit for agent subprocess (seconds)
 DEFAULT_BUILD_TIMEOUT = None   # no timeout for final verification build
 
 AGENT_PROMPT_TEMPLATE = """\
@@ -58,7 +58,8 @@ You are inside a Lean 4 project (dalek-lean-bench, a formal verification of \
 the curve25519-dalek Rust library).
 
 Your task: replace the `sorry` in `{file_path}` for theorem `{theorem_name}` \
-with a correct proof.
+with a correct proof. Even if the theorem is annotated with externally verified \
+in Verus, you should prove it in Lean.
 
 === Workflow ===
 1. Read `{file_path}` to understand the context.
