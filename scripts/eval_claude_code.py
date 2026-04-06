@@ -54,11 +54,37 @@ DEFAULT_BUDGET_USD    = 5.00   # max spend per entry
 DEFAULT_TIMEOUT       = 500    # hard wall-clock limit for agent subprocess (seconds)
 DEFAULT_BUILD_TIMEOUT = None   # no timeout for final verification build
 
-AGENT_PROMPT_TEMPLATE = """\
+# AGENT_PROMPT_TEMPLATE = """\
+# You are inside a Lean 4 project (dalek-lean-bench, a formal verification of \
+# the curve25519-dalek Rust library).
+
+# Your task: replace the `sorry` in `{file_path}` for theorem `{theorem_name}` \
+# with a correct proof. Even if the theorem is annotated with externally verified \
+# in Verus, you should prove it in Lean.
+
+# Run /init to initialze the structure the structure of the library.
+
+# === Workflow ===
+# 1. Edit the file: replace `sorry` with your proof attempt. Do not waste too much time in searching
+#    proof patterns, which may cause you do no action before the time exceeds.
+# 2. Run `nice -n 19 lake build {module}` and read the compiler output.
+# 3. If there are errors, fix them and repeat from step 1.
+# 4. Stop when the three conditions are satisfied
+#    (1) `nice -n 19 lake build {module}` exits with code 0 (no errors), 
+#    (2) the `sorry` has been replaced with a proof, 
+#    (3) no new `sorry` has been introduced.
+
+# Only edit `{file_path}`. \
+# Do NOT modify any other file.
+# """
+
+
+
+DEBUG_PROMPT_TEMPLATE = """\
 You are inside a Lean 4 project (dalek-lean-bench, a formal verification of \
 the curve25519-dalek Rust library).
 
-Your task: replace the `sorry` in `{file_path}` for theorem `{theorem_name}` \
+Your task: replace the `sorry` in `Curve25519Dalek/Specs/Edwards/EdwardsPoint/Add.lean` for theorem `add_spec` \
 with a correct proof. Even if the theorem is annotated with externally verified \
 in Verus, you should prove it in Lean.
 
@@ -66,14 +92,14 @@ Run /init to initialze the structure the structure of the library.
 
 === Workflow ===
 1. Edit the file: replace `sorry` with your proof attempt.
-2. Run `nice -n 19 lake build {module}` and read the compiler output.
+2. Run `nice -n 19 lake build Curve25519Dalek.Specs.Edwards.EdwardsPoint.Add` and read the compiler output.
 3. If there are errors, fix them and repeat from step 1.
 4. Stop when the three conditions are satisfied
-  (1) `nice -n 19 lake build {module}` exits with code 0 (no errors), 
+  (1) `nice -n 19 lake build Curve25519Dalek.Specs.Edwards.EdwardsPoint.Add` exits with code 0 (no errors), 
   (2) the `sorry` has been replaced with a proof, 
   (3) no new `sorry` has been introduced.
 
-Only edit `{file_path}`. \
+Only edit `Curve25519Dalek/Specs/Edwards/EdwardsPoint/Add.lean`. \
 Do NOT modify any other file.
 """
 
