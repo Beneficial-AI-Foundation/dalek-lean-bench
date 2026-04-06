@@ -47,7 +47,7 @@ natural language specs:
 @[simp]
 theorem BASEPOINT_ORDER_PRIVATE_spec :
     U8x32_as_Nat BASEPOINT_ORDER_PRIVATE.bytes = L := by
-  unfold BASEPOINT_ORDER_PRIVATE
+  unfold constants.BASEPOINT_ORDER_PRIVATE
   decide
 
 end curve25519_dalek.constants

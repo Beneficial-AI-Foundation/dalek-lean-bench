@@ -2,10 +2,22 @@
 """
 Claude Code agentic evaluation harness for dalek-lean-bench.
 
-Each dataset entry is evaluated inside a git worktree checked out at
-`commit_before`.  A `claude --print --bare` subprocess is spawned per entry;
-the agent autonomously reads surrounding Lean files, edits the sorry, runs
-`lake build` to read compiler errors, and iterates until it succeeds or hits a
+Two evaluation modes are supported (select with --mode):
+
+  head (default)
+    Worktree is checked out at HEAD.  The proof of the target theorem is
+    replaced with `sorry` in-place, leaving all imports and helper specs
+    intact.  The agent only needs to fill the proof body — the scaffolding
+    is already present.  HEAD's .lake/build is hardlinked into the worktree
+    so dependency compilation is skipped.
+
+  commit-before
+    Worktree is checked out at the commit *before* the proof was written.
+    Imports and helper specs that were added together with the proof are
+    absent; the agent must discover and add them.  Harder and slower.
+
+A `claude --print` subprocess is spawned per entry; the agent edits the
+sorry, runs `lake build`, and iterates until it succeeds or hits a
 budget/time limit.
 
 Prerequisites:
@@ -13,8 +25,11 @@ Prerequisites:
     claude --version            # Claude Code CLI must be on PATH
 
 Usage:
-    # Evaluate all entries
+    # Evaluate all entries (head mode by default)
     python scripts/eval_claude_code.py
+
+    # Use old commit-before mode
+    python scripts/eval_claude_code.py --mode commit-before
 
     # Quick smoke-test on 3 entries
     python scripts/eval_claude_code.py --limit 3
@@ -54,53 +69,49 @@ DEFAULT_BUDGET_USD    = 5.00   # max spend per entry
 DEFAULT_TIMEOUT       = 500    # hard wall-clock limit for agent subprocess (seconds)
 DEFAULT_BUILD_TIMEOUT = None   # no timeout for final verification build
 
-# AGENT_PROMPT_TEMPLATE = """\
-# You are inside a Lean 4 project (dalek-lean-bench, a formal verification of \
-# the curve25519-dalek Rust library).
-
-# Your task: replace the `sorry` in `{file_path}` for theorem `{theorem_name}` \
-# with a correct proof. Even if the theorem is annotated with externally verified \
-# in Verus, you should prove it in Lean.
-
-# Run /init to initialze the structure the structure of the library.
-
-# === Workflow ===
-# 1. Edit the file: replace `sorry` with your proof attempt. Do not waste too much time in searching
-#    proof patterns, which may cause you do no action before the time exceeds.
-# 2. Run `nice -n 19 lake build {module}` and read the compiler output.
-# 3. If there are errors, fix them and repeat from step 1.
-# 4. Stop when the three conditions are satisfied
-#    (1) `nice -n 19 lake build {module}` exits with code 0 (no errors), 
-#    (2) the `sorry` has been replaced with a proof, 
-#    (3) no new `sorry` has been introduced.
-
-# Only edit `{file_path}`. \
-# Do NOT modify any other file.
-# """
-
-
-
-DEBUG_PROMPT_TEMPLATE = """\
+# Prompt for --mode head (default): all imports/specs are present, just fill the proof.
+AGENT_PROMPT_HEAD = """\
 You are inside a Lean 4 project (dalek-lean-bench, a formal verification of \
 the curve25519-dalek Rust library).
 
-Your task: replace the `sorry` in `Curve25519Dalek/Specs/Edwards/EdwardsPoint/Add.lean` for theorem `add_spec` \
-with a correct proof. Even if the theorem is annotated with externally verified \
+Your task: replace the `sorry` in `{file_path}` for theorem `{theorem_name}` \
+with a correct proof. Even if the theorem is annotated as externally verified \
 in Verus, you should prove it in Lean.
 
-Run /init to initialze the structure the structure of the library.
+All necessary imports and helper lemmas are already present in the file — \
+focus only on the proof body.
 
 === Workflow ===
 1. Edit the file: replace `sorry` with your proof attempt.
-2. Run `nice -n 19 lake build Curve25519Dalek.Specs.Edwards.EdwardsPoint.Add` and read the compiler output.
+2. Run `nice -n 19 lake build {module}` and read the compiler output.
 3. If there are errors, fix them and repeat from step 1.
-4. Stop when the three conditions are satisfied
-  (1) `nice -n 19 lake build Curve25519Dalek.Specs.Edwards.EdwardsPoint.Add` exits with code 0 (no errors), 
-  (2) the `sorry` has been replaced with a proof, 
-  (3) no new `sorry` has been introduced.
+4. Stop when all three conditions are satisfied:
+   (1) `nice -n 19 lake build {module}` exits with code 0 (no errors),
+   (2) the `sorry` has been replaced with a proof,
+   (3) no new `sorry` has been introduced.
 
-Only edit `Curve25519Dalek/Specs/Edwards/EdwardsPoint/Add.lean`. \
-Do NOT modify any other file.
+Only edit `{file_path}`. Do NOT modify any other file.
+"""
+
+# Prompt for --mode commit-before: agent may need to add imports/specs too.
+AGENT_PROMPT_COMMIT_BEFORE = """\
+You are inside a Lean 4 project (dalek-lean-bench, a formal verification of \
+the curve25519-dalek Rust library).
+
+Your task: replace the `sorry` in `{file_path}` for theorem `{theorem_name}` \
+with a correct proof. Even if the theorem is annotated as externally verified \
+in Verus, you should prove it in Lean.
+
+=== Workflow ===
+1. Edit the file: replace `sorry` with your proof attempt.
+2. Run `nice -n 19 lake build {module}` and read the compiler output.
+3. If there are errors, fix them and repeat from step 1.
+4. Stop when all three conditions are satisfied:
+   (1) `nice -n 19 lake build {module}` exits with code 0 (no errors),
+   (2) the `sorry` has been replaced with a proof,
+   (3) no new `sorry` has been introduced.
+
+Only edit `{file_path}`. Do NOT modify any other file.
 """
 
 
@@ -243,6 +254,120 @@ def _seed_cache_from_head() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Head-mode helpers
+# ---------------------------------------------------------------------------
+
+_TOP_LEVEL_RE = re.compile(
+    r"^(theorem|lemma|def |abbrev |instance |class |structure |private |protected |"
+    r"@\[|end |namespace |section |#check|#eval|#print|variable |open |set_option |"
+    r"noncomputable )"
+)
+
+
+def _find_theorem_span(text: str, thm_name: str) -> tuple[int, int] | None:
+    """
+    Find the theorem named `thm_name` in `text`.
+    Returns (start_char, end_char) byte offsets covering attribute lines
+    through the end of the proof body, or None if not found.
+    """
+    lines = text.splitlines(keepends=True)
+    thm_re = re.compile(r"^\s*(?:theorem|lemma)\s+" + re.escape(thm_name) + r"\b")
+
+    for i, line in enumerate(lines):
+        if not thm_re.match(line):
+            continue
+
+        # Walk back to include @[...] and doc-comment lines
+        attr_start = i
+        while attr_start > 0:
+            prev = lines[attr_start - 1].strip()
+            if prev.startswith("@[") or prev.startswith("/--") or prev.startswith("--"):
+                attr_start -= 1
+            else:
+                break
+
+        base_indent = len(line) - len(line.lstrip())
+
+        # Walk forward until a new top-level declaration at same/lower indent
+        end = i + 1
+        while end < len(lines):
+            curr = lines[end]
+            stripped = curr.strip()
+            if stripped:
+                curr_indent = len(curr) - len(curr.lstrip())
+                if curr_indent <= base_indent and _TOP_LEVEL_RE.match(stripped):
+                    break
+            end += 1
+
+        start_char = sum(len(l) for l in lines[:attr_start])
+        end_char   = sum(len(l) for l in lines[:end])
+        return start_char, end_char
+
+    return None
+
+
+def inject_sorry(worktree: Path, entry: dict) -> bool:
+    """Replace the proof body with `sorry` in the target file.
+
+    Finds the theorem by name (robust to signature changes between commits),
+    locates the proof body after `:= by`, and replaces it with `sorry`.
+    Returns True on success.
+    """
+    target = worktree / entry["file_path"]
+    if not target.exists():
+        return False
+
+    text = target.read_text(encoding="utf-8")
+    span = _find_theorem_span(text, entry["theorem_name"])
+    if span is None:
+        return False
+
+    start, end = span
+    block = text[start:end]
+
+    by_match = re.search(r":=\s*by\b", block)
+    if by_match is None:
+        return False
+
+    # Keep everything up to and including ':= by', replace proof with sorry
+    new_block = block[: by_match.end()] + "\n  sorry\n"
+    new_text = text[:start] + new_block + text[end:]
+    target.write_text(new_text, encoding="utf-8")
+    return True
+
+
+def _find_commit_after(commit_before: str, file_path: str) -> str | None:
+    """Return the first commit after `commit_before` (up to HEAD) that touches `file_path`."""
+    result = subprocess.run(
+        ["git", "log", "--ancestry-path", f"{commit_before}..HEAD",
+         "--format=%H", "--reverse", "--", file_path],
+        cwd=REPO_ROOT, capture_output=True, text=True,
+    )
+    lines = result.stdout.strip().splitlines()
+    return lines[0] if lines else None
+
+
+def _hardlink_head_build(worktree: Path) -> None:
+    """Hardlink HEAD's .lake/build into the worktree (fast; same filesystem).
+
+    This lets `lake build` skip recompiling all dependencies and only rebuild
+    the files the agent actually modified.  Hardlinks are safe: Lean replaces
+    files atomically, so the HEAD build directory is never corrupted.
+    """
+    src = REPO_ROOT / ".lake" / "build"
+    dst = worktree / ".lake" / "build"
+    if not src.exists() or dst.exists():
+        return
+    (worktree / ".lake").mkdir(exist_ok=True)
+    try:
+        shutil.copytree(src, dst, copy_function=os.link, symlinks=True)
+    except OSError:
+        # Fallback: regular copy (e.g. cross-filesystem, though unlikely here)
+        shutil.rmtree(dst, ignore_errors=True)
+        shutil.copytree(src, dst, symlinks=True)
+
+
+# ---------------------------------------------------------------------------
 # Final verification build (authoritative pass/fail)
 # ---------------------------------------------------------------------------
 
@@ -359,19 +484,20 @@ def run_claude_code_agent(
     budget_usd: float,
     timeout: int,
     model: str | None,
+    mode: str = "head",
     live: bool = False,
 ) -> dict:
     """
-    Spawn `claude --print --bare` in the worktree.
+    Spawn `claude --print` in the worktree.
 
     Returns a dict with keys: exit_code, stdout, stderr, time_s.
     If `live` is True, stream parsed agent events to the terminal in real-time.
     """
     module = entry["file_path"].replace("/", ".").removesuffix(".lean")
-    prompt = AGENT_PROMPT_TEMPLATE.format(
+    template = AGENT_PROMPT_HEAD if mode == "head" else AGENT_PROMPT_COMMIT_BEFORE
+    prompt = template.format(
         file_path=entry["file_path"],
         theorem_name=entry["theorem_name"],
-        formal_statement=entry["formal_statement"],
         module=module,
     )
 
@@ -501,6 +627,7 @@ def evaluate_one(
     timeout: int,
     build_timeout: int,
     model: str | None,
+    mode: str,
     dry_run: bool,
     live: bool = False,
 ) -> dict:
@@ -509,6 +636,8 @@ def evaluate_one(
         "theorem_name": entry["theorem_name"],
         "file_path": entry["file_path"],
         "commit_before": entry["commit_before"],
+        "commit_after": None,   # set in head mode
+        "mode": mode,
         "model": model or "default",
         "timestamp": datetime.now(tz=timezone.utc).isoformat(),
         "success": False,
@@ -528,48 +657,98 @@ def evaluate_one(
         result["error"] = "dry-run: skipped"
         return result
 
-    # ── Step 1: worktree at commit_before ────────────────────────────────────
-    try:
-        worktree = create_worktree(entry["commit_before"])
-    except subprocess.CalledProcessError as e:
-        result["error"] = f"worktree error: {e.stderr.decode()[:200]}"
-        return result
+    if mode == "head":
+        # ── Head mode: worktree at commit_after, proof replaced with sorry ───
+        # commit_after is the first commit after commit_before that touches
+        # the file — it has all the imports/specs added alongside the proof.
+        commit_after = _find_commit_after(entry["commit_before"], entry["file_path"])
+        if commit_after is None:
+            result["error"] = "head mode: no commit after commit_before found for this file"
+            return result
+        result["commit_after"] = commit_after
 
-    try:
-        # ── Step 1b: symlink cached packages ─────────────────────────────────
-        _setup_worktree_packages(worktree, entry["commit_before"])
+        try:
+            worktree = create_worktree(commit_after)
+        except subprocess.CalledProcessError as e:
+            result["error"] = f"worktree error: {e.stderr.decode()[:200]}"
+            return result
 
-        # ── Step 2: run Claude Code agent ────────────────────────────────────
-        agent_res = run_claude_code_agent(entry, worktree, budget_usd, timeout, model, live=live)
-        result["agent_time_s"]    = agent_res["time_s"]
-        result["agent_exit_code"] = agent_res["exit_code"]
-        result["agent_timed_out"] = agent_res["timed_out"]
-        result["agent_stdout"]    = agent_res["stdout"]
-        result["agent_stderr"]    = agent_res["stderr"]
+        try:
+            _setup_worktree_packages(worktree, commit_after)
+            # Hardlink HEAD's build cache — valid .olean files are reused,
+            # the modified file is recompiled by Lean automatically.
+            _hardlink_head_build(worktree)
 
-        if agent_res["timed_out"]:
-            result["error"] = "agent timed out"
-            # still attempt verification — agent may have partially succeeded
-        elif agent_res["exit_code"] != 0:
-            result["error"] = f"claude exited {agent_res['exit_code']}: {agent_res['stderr'][:200]}"
+            # Replace the proof with sorry in the target file
+            if not inject_sorry(worktree, entry):
+                result["error"] = "inject_sorry failed: theorem not found in file at commit_after"
+                return result
 
-        # ── Step 3: extract what the agent wrote ─────────────────────────────
-        result["extracted_proof"] = extract_proof_from_worktree(
-            worktree, entry["file_path"], entry["formal_statement"]
-        )
+            # ── Run agent ────────────────────────────────────────────────────
+            agent_res = run_claude_code_agent(
+                entry, worktree, budget_usd, timeout, model, mode=mode, live=live
+            )
+            result["agent_time_s"]    = agent_res["time_s"]
+            result["agent_exit_code"] = agent_res["exit_code"]
+            result["agent_timed_out"] = agent_res["timed_out"]
+            result["agent_stdout"]    = agent_res["stdout"]
+            result["agent_stderr"]    = agent_res["stderr"]
 
-        # ── Step 4: authoritative lake build ─────────────────────────────────
-        build_res = run_lake_build(worktree, entry["file_path"], timeout=build_timeout)
-        result["success"]       = build_res["success"]
-        result["build_time_s"]  = build_res["time_s"]
-        result["build_stdout"]  = build_res["stdout"]
-        result["build_stderr"]  = build_res["stderr"]
+            if agent_res["timed_out"]:
+                result["error"] = "agent timed out"
+            elif agent_res["exit_code"] != 0:
+                result["error"] = f"claude exited {agent_res['exit_code']}: {agent_res['stderr'][:200]}"
 
-        # ── Step 5: populate cache with newly compiled packages ───────────────
-        _populate_package_cache(worktree, entry["commit_before"])
+            result["extracted_proof"] = extract_proof_from_worktree(
+                worktree, entry["file_path"], entry["formal_statement"]
+            )
+            build_res = run_lake_build(worktree, entry["file_path"], timeout=build_timeout)
+            result["success"]      = build_res["success"]
+            result["build_time_s"] = build_res["time_s"]
+            result["build_stdout"] = build_res["stdout"]
+            result["build_stderr"] = build_res["stderr"]
 
-    finally:
-        remove_worktree(worktree)
+        finally:
+            remove_worktree(worktree)
+
+    else:
+        # ── Commit-before mode: worktree at commit_before ────────────────────
+        try:
+            worktree = create_worktree(entry["commit_before"])
+        except subprocess.CalledProcessError as e:
+            result["error"] = f"worktree error: {e.stderr.decode()[:200]}"
+            return result
+
+        try:
+            _setup_worktree_packages(worktree, entry["commit_before"])
+
+            agent_res = run_claude_code_agent(
+                entry, worktree, budget_usd, timeout, model, mode=mode, live=live
+            )
+            result["agent_time_s"]    = agent_res["time_s"]
+            result["agent_exit_code"] = agent_res["exit_code"]
+            result["agent_timed_out"] = agent_res["timed_out"]
+            result["agent_stdout"]    = agent_res["stdout"]
+            result["agent_stderr"]    = agent_res["stderr"]
+
+            if agent_res["timed_out"]:
+                result["error"] = "agent timed out"
+            elif agent_res["exit_code"] != 0:
+                result["error"] = f"claude exited {agent_res['exit_code']}: {agent_res['stderr'][:200]}"
+
+            result["extracted_proof"] = extract_proof_from_worktree(
+                worktree, entry["file_path"], entry["formal_statement"]
+            )
+            build_res = run_lake_build(worktree, entry["file_path"], timeout=build_timeout)
+            result["success"]      = build_res["success"]
+            result["build_time_s"] = build_res["time_s"]
+            result["build_stdout"] = build_res["stdout"]
+            result["build_stderr"] = build_res["stderr"]
+
+            _populate_package_cache(worktree, entry["commit_before"])
+
+        finally:
+            remove_worktree(worktree)
 
     return result
 
@@ -603,6 +782,10 @@ def main() -> None:
                         help="Append to --output and skip already-evaluated IDs")
     parser.add_argument("--parallel", type=int, default=1, metavar="N",
                         help="Number of entries to evaluate concurrently (default: 1)")
+    parser.add_argument("--mode", default="head", choices=["head", "commit-before"],
+                        help="Evaluation mode: 'head' (default) checks out HEAD and injects sorry "
+                             "so all imports/specs are present; 'commit-before' checks out the "
+                             "commit before the proof was written (harder, original behaviour)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Skip claude calls and lake build")
     parser.add_argument("--live", action="store_true",
@@ -645,6 +828,7 @@ def main() -> None:
     # worktrees sharing the same manifest version get instant cache hits.
     _seed_cache_from_head()
 
+    print(f"Mode:       {args.mode}{' (DRY RUN)' if args.dry_run else ''}")
     print(f"Model:      {args.model or '(claude default)'}")
     print(f"Dataset:    {dataset_path}  ({len(dataset)} entries)")
     print(f"Output:     {output_path}")
@@ -652,8 +836,6 @@ def main() -> None:
     print(f"Timeout:    {args.timeout}s (agent)  /  {build_timeout_str} (build)")
     print(f"Budget:     ${args.budget_usd:.2f} per entry")
     print(f"Parallel:   {args.parallel}")
-    if args.dry_run:
-        print("Mode:       DRY RUN")
     if args.live:
         print("Live:       enabled (streaming agent output)")
     print()
@@ -669,6 +851,7 @@ def main() -> None:
             timeout=args.timeout,
             build_timeout=args.build_timeout,
             model=args.model,
+            mode=args.mode,
             dry_run=args.dry_run,
             live=args.live,
         )
