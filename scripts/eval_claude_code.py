@@ -38,6 +38,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -49,8 +50,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Layout: PACKAGE_CACHE_DIR/<pkg-name>/<rev>/
 PACKAGE_CACHE_DIR = Path.home() / ".cache" / "dalek-lake-packages"
 
-DEFAULT_BUDGET_USD    = 3.00   # max spend per entry
-DEFAULT_TIMEOUT       = 300    # hard wall-clock limit for agent subprocess (seconds)
+DEFAULT_BUDGET_USD    = 5.00   # max spend per entry
+DEFAULT_TIMEOUT       = 500    # hard wall-clock limit for agent subprocess (seconds)
 DEFAULT_BUILD_TIMEOUT = None   # no timeout for final verification build
 
 AGENT_PROMPT_TEMPLATE = """\
@@ -61,12 +62,13 @@ Your task: replace the `sorry` in `{file_path}` for theorem `{theorem_name}` \
 with a correct proof. Even if the theorem is annotated with externally verified \
 in Verus, you should prove it in Lean.
 
+Run /init to initialze the structure the structure of the library.
+
 === Workflow ===
-1. Read `{file_path}` to understand the context.
-2. Edit the file: replace `sorry` with your proof attempt.
-3. Run `nice -n 19 lake build {module}` and read the compiler output.
-4. If there are errors, fix them and repeat from step 2.
-5. Stop when the three conditions are satisfied
+1. Edit the file: replace `sorry` with your proof attempt.
+2. Run `nice -n 19 lake build {module}` and read the compiler output.
+3. If there are errors, fix them and repeat from step 1.
+4. Stop when the three conditions are satisfied
   (1) `nice -n 19 lake build {module}` exits with code 0 (no errors), 
   (2) the `sorry` has been replaced with a proof, 
   (3) no new `sorry` has been introduced.
@@ -253,17 +255,91 @@ def run_lake_build(worktree: Path, file_path: str, timeout: int | None = None) -
 # Claude Code subprocess
 # ---------------------------------------------------------------------------
 
+def _format_stream_json_event(line: str, pending_tools: dict[str, str]) -> str | None:
+    """Parse one stream-json line and return a human-readable string, or None to skip."""
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        ev = json.loads(line)
+    except json.JSONDecodeError:
+        return None  # partial/non-JSON line
+
+    t   = ev.get("type")
+    sub = ev.get("subtype", "")
+
+    if t == "assistant":
+        parts = []
+        for block in ev.get("message", {}).get("content", []):
+            btype = block.get("type")
+            if btype == "text":
+                text = block["text"].strip()
+                if text:
+                    parts.append(text)
+            elif btype == "tool_use":
+                tool_id   = block.get("id", "")
+                tool_name = block.get("name", "?")
+                inp       = block.get("input", {})
+                pending_tools[tool_id] = tool_name
+                if tool_name == "Bash":
+                    desc = inp.get("description") or inp.get("command", "")[:120]
+                    parts.append(f"[Bash] {desc}")
+                elif tool_name in ("Read", "Write", "Edit", "Glob", "Grep"):
+                    key = next(iter(inp), None)
+                    val = str(inp.get(key, ""))[:120] if key else ""
+                    parts.append(f"[{tool_name}] {val}")
+                else:
+                    inp_s = ", ".join(f"{k}={str(v)[:40]}" for k, v in list(inp.items())[:3])
+                    parts.append(f"[{tool_name}] {inp_s}")
+            # skip thinking blocks
+        return "\n".join(parts) if parts else None
+
+    elif t == "user":
+        parts = []
+        content = ev.get("message", {}).get("content", [])
+        if isinstance(content, list):
+            for block in content:
+                if block.get("type") == "tool_result":
+                    tool_id   = block.get("tool_use_id", "")
+                    tool_name = pending_tools.pop(tool_id, "?")
+                    rc        = block.get("content", "")
+                    if isinstance(rc, list):
+                        rc = " ".join(c.get("text", "") for c in rc if c.get("type") == "text")
+                    rc = str(rc).strip()
+                    if len(rc) > 400:
+                        rc = rc[:400] + " ..."
+                    parts.append(f"  -> [{tool_name} result] {rc}")
+        return "\n".join(parts) if parts else None
+
+    elif t == "result":
+        turns    = ev.get("num_turns", "?")
+        cost     = ev.get("total_cost_usd")
+        cost_str = f"  cost=${cost:.4f}" if cost else ""
+        result_text = ev.get("result", "").strip()
+        summary = f"[done/{sub}] turns={turns}{cost_str}"
+        if result_text:
+            summary += f"\n  {result_text}"
+        return summary
+
+    elif t == "system" and sub == "api_retry":
+        return "[api_retry]"
+
+    return None  # skip init/debug/other events
+
+
 def run_claude_code_agent(
     entry: dict,
     worktree: Path,
     budget_usd: float,
     timeout: int,
     model: str | None,
+    live: bool = False,
 ) -> dict:
     """
     Spawn `claude --print --bare` in the worktree.
 
     Returns a dict with keys: exit_code, stdout, stderr, time_s.
+    If `live` is True, stream parsed agent events to the terminal in real-time.
     """
     module = entry["file_path"].replace("/", ".").removesuffix(".lean")
     prompt = AGENT_PROMPT_TEMPLATE.format(
@@ -275,10 +351,9 @@ def run_claude_code_agent(
 
     cmd = [
         "claude", "--print",
-        "--bare",                          # skip hooks/memory/plugins for reproducibility
         "--no-session-persistence",
         "--dangerously-skip-permissions",  # worktree is isolated; no prompt dialogs
-        "--allowedTools", "Bash,Read,Write,Edit,Glob,Grep",
+        "--allowedTools", "Bash,Read,Write,Edit,Glob,Grep,Skill,Agent,WebFetch",
         "--max-budget-usd", str(budget_usd),
         "--output-format", "stream-json",
         "--verbose",
@@ -287,37 +362,71 @@ def run_claude_code_agent(
     if model:
         cmd += ["--model", model]
 
-    import tempfile
     t0 = time.time()
     timed_out = False
-    with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as out_f, \
-         tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as err_f:
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(worktree),
-            stdout=out_f,
-            stderr=err_f,
-            text=True,
-        )
-        try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-            timed_out = True
-        out_f.seek(0)
-        err_f.seek(0)
-        stdout = out_f.read()
-        stderr = err_f.read()
-        if timed_out:
-            stderr += f"\nsubprocess TIMEOUT after {timeout}s"
-        return {
-            "exit_code": proc.returncode if not timed_out else -1,
-            "stdout": stdout,
-            "stderr": stderr,
-            "time_s": round(time.time() - t0, 2),
-            "timed_out": timed_out,
-        }
+
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+    prefix = f"[{entry['id']}] " if live else ""
+
+    # shared state for tool_use_id -> tool name matching across lines
+    pending_tools: dict[str, str] = {}
+    live_lock = threading.Lock()
+
+    def _stdout_reader(stream) -> None:
+        for line in stream:
+            stdout_chunks.append(line)
+            if live:
+                with live_lock:
+                    formatted = _format_stream_json_event(line, pending_tools)
+                if formatted:
+                    for fline in formatted.splitlines():
+                        print(f"{prefix}{fline}", flush=True)
+
+    def _stderr_reader(stream) -> None:
+        for line in stream:
+            stderr_chunks.append(line)
+            if live:
+                print(f"{prefix}[stderr] {line}", end="", flush=True)
+
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(worktree),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        errors="replace",
+    )
+    t_out = threading.Thread(target=_stdout_reader, args=(proc.stdout,), daemon=True)
+    t_err = threading.Thread(target=_stderr_reader, args=(proc.stderr,), daemon=True)
+    t_out.start()
+    t_err.start()
+
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        timed_out = True
+
+    t_out.join()
+    t_err.join()
+
+    stdout = "".join(stdout_chunks)
+    stderr = "".join(stderr_chunks)
+    if timed_out:
+        msg = f"subprocess TIMEOUT after {timeout}s"
+        stderr += f"\n{msg}"
+        if live:
+            print(f"{prefix}[stderr] {msg}", flush=True)
+
+    return {
+        "exit_code": proc.returncode if not timed_out else -1,
+        "stdout": stdout,
+        "stderr": stderr,
+        "time_s": round(time.time() - t0, 2),
+        "timed_out": timed_out,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +476,7 @@ def evaluate_one(
     build_timeout: int,
     model: str | None,
     dry_run: bool,
+    live: bool = False,
 ) -> dict:
     result: dict = {
         "id": entry["id"],
@@ -404,7 +514,7 @@ def evaluate_one(
         _setup_worktree_packages(worktree, entry["commit_before"])
 
         # ── Step 2: run Claude Code agent ────────────────────────────────────
-        agent_res = run_claude_code_agent(entry, worktree, budget_usd, timeout, model)
+        agent_res = run_claude_code_agent(entry, worktree, budget_usd, timeout, model, live=live)
         result["agent_time_s"]    = agent_res["time_s"]
         result["agent_exit_code"] = agent_res["exit_code"]
         result["agent_timed_out"] = agent_res["timed_out"]
@@ -469,6 +579,8 @@ def main() -> None:
                         help="Number of entries to evaluate concurrently (default: 1)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Skip claude calls and lake build")
+    parser.add_argument("--live", action="store_true",
+                        help="Stream agent stdout/stderr to terminal in real-time (useful for debugging)")
     args = parser.parse_args()
 
     # Resolve output path
@@ -516,6 +628,8 @@ def main() -> None:
     print(f"Parallel:   {args.parallel}")
     if args.dry_run:
         print("Mode:       DRY RUN")
+    if args.live:
+        print("Live:       enabled (streaming agent output)")
     print()
 
     n_pass = n_fail = 0
@@ -530,6 +644,7 @@ def main() -> None:
             build_timeout=args.build_timeout,
             model=args.model,
             dry_run=args.dry_run,
+            live=args.live,
         )
 
     with open(output_path, "a", encoding="utf-8") as out_f:
