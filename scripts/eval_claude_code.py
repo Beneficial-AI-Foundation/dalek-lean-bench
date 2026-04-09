@@ -43,6 +43,9 @@ Usage:
     # Dry-run (no claude calls, no lake build)
     python scripts/eval_claude_code.py --dry-run --limit 3
 
+    # Keep worktree after evaluation (prints path; useful for debugging)
+    python scripts/eval_claude_code.py --keep-worktree --ids pow_p58_spec_8e73004
+
 Environment variables:
     ANTHROPIC_API_KEY   required (Claude Code reads this automatically)
 """
@@ -630,6 +633,7 @@ def evaluate_one(
     mode: str,
     dry_run: bool,
     live: bool = False,
+    keep_worktree: bool = False,
 ) -> dict:
     result: dict = {
         "id": entry["id"],
@@ -709,7 +713,10 @@ def evaluate_one(
             result["build_stderr"] = build_res["stderr"]
 
         finally:
-            remove_worktree(worktree)
+            if keep_worktree:
+                print(f"[keep-worktree] {entry['id']}: {worktree}")
+            else:
+                remove_worktree(worktree)
 
     else:
         # ── Commit-before mode: worktree at commit_before ────────────────────
@@ -748,7 +755,10 @@ def evaluate_one(
             _populate_package_cache(worktree, entry["commit_before"])
 
         finally:
-            remove_worktree(worktree)
+            if keep_worktree:
+                print(f"[keep-worktree] {entry['id']}: {worktree}")
+            else:
+                remove_worktree(worktree)
 
     return result
 
@@ -790,6 +800,8 @@ def main() -> None:
                         help="Skip claude calls and lake build")
     parser.add_argument("--live", action="store_true",
                         help="Stream agent stdout/stderr to terminal in real-time (useful for debugging)")
+    parser.add_argument("--keep-worktree", action="store_true",
+                        help="Do not delete the worktree after evaluation (prints path; useful for debugging)")
     args = parser.parse_args()
 
     # Resolve output path
@@ -854,6 +866,7 @@ def main() -> None:
             mode=args.mode,
             dry_run=args.dry_run,
             live=args.live,
+            keep_worktree=args.keep_worktree,
         )
 
     with open(output_path, "a", encoding="utf-8") as out_f:
