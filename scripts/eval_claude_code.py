@@ -124,7 +124,9 @@ Only edit `{file_path}`. Do NOT modify any other file.
 
 def create_worktree(commit: str) -> Path:
     import tempfile
-    tmp = Path(tempfile.mkdtemp(prefix="dalek-cc-eval-"))
+    worktrees_dir = REPO_ROOT.parent / "dalek-worktrees"
+    worktrees_dir.mkdir(exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(prefix="dalek-cc-eval-", dir=worktrees_dir))
     subprocess.run(
         ["git", "worktree", "add", "--detach", str(tmp), commit],
         cwd=REPO_ROOT,
