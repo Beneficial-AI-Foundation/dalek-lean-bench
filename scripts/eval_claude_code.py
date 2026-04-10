@@ -46,6 +46,9 @@ Usage:
     # Keep worktree after evaluation (prints path; useful for debugging)
     python scripts/eval_claude_code.py --keep-worktree --ids pow_p58_spec_8e73004
 
+    # Setup only: create worktree and inject sorry, skip agent and build (implies --keep-worktree)
+    python scripts/eval_claude_code.py --setup-only --ids pow_p58_spec_8e73004
+
 Environment variables:
     ANTHROPIC_API_KEY   required (Claude Code reads this automatically)
 """
@@ -636,6 +639,7 @@ def evaluate_one(
     dry_run: bool,
     live: bool = False,
     keep_worktree: bool = False,
+    setup_only: bool = False,
 ) -> dict:
     result: dict = {
         "id": entry["id"],
@@ -690,6 +694,11 @@ def evaluate_one(
                 result["error"] = "inject_sorry failed: theorem not found in file at commit_after"
                 return result
 
+            if setup_only:
+                print(f"[setup-only] {entry['id']}: {worktree}")
+                result["error"] = "setup-only: skipped agent and build"
+                return result
+
             # ── Run agent ────────────────────────────────────────────────────
             agent_res = run_claude_code_agent(
                 entry, worktree, budget_usd, timeout, model, mode=mode, live=live
@@ -715,7 +724,7 @@ def evaluate_one(
             result["build_stderr"] = build_res["stderr"]
 
         finally:
-            if keep_worktree:
+            if keep_worktree or setup_only:
                 print(f"[keep-worktree] {entry['id']}: {worktree}")
             else:
                 remove_worktree(worktree)
@@ -730,6 +739,11 @@ def evaluate_one(
 
         try:
             _setup_worktree_packages(worktree, entry["commit_before"])
+
+            if setup_only:
+                print(f"[setup-only] {entry['id']}: {worktree}")
+                result["error"] = "setup-only: skipped agent and build"
+                return result
 
             agent_res = run_claude_code_agent(
                 entry, worktree, budget_usd, timeout, model, mode=mode, live=live
@@ -757,7 +771,7 @@ def evaluate_one(
             _populate_package_cache(worktree, entry["commit_before"])
 
         finally:
-            if keep_worktree:
+            if keep_worktree or setup_only:
                 print(f"[keep-worktree] {entry['id']}: {worktree}")
             else:
                 remove_worktree(worktree)
@@ -804,6 +818,8 @@ def main() -> None:
                         help="Stream agent stdout/stderr to terminal in real-time (useful for debugging)")
     parser.add_argument("--keep-worktree", action="store_true",
                         help="Do not delete the worktree after evaluation (prints path; useful for debugging)")
+    parser.add_argument("--setup-only", action="store_true",
+                        help="Create worktree and inject sorry, then stop — skip agent and build; implies --keep-worktree")
     args = parser.parse_args()
 
     # Resolve output path
@@ -869,6 +885,7 @@ def main() -> None:
             dry_run=args.dry_run,
             live=args.live,
             keep_worktree=args.keep_worktree,
+            setup_only=args.setup_only,
         )
 
     with open(output_path, "a", encoding="utf-8") as out_f:
