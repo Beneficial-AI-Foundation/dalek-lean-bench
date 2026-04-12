@@ -43,7 +43,7 @@ Usage:
     python scripts/eval_timeline.py --keep-worktree --ids tl_0004_clamp_integer
 
     # Setup only: create worktree and inject sorries, skip agent and build
-    python scripts/eval_timeline.py --setup-only --ids tl_0004_clamp_integer
+    python scripts/eval_timeline.py --setup-only --ids tl_0244_mul_assign
 
     # Stream agent output to terminal in real-time
     python scripts/eval_timeline.py --live --limit 2
@@ -207,16 +207,28 @@ _TOP_LEVEL_RE = re.compile(
 )
 
 
-def _find_theorem_span(text: str, thm_name: str) -> tuple[int, int] | None:
-    """Find `thm_name` in `text`. Returns (start_char, end_char) or None."""
+def inject_sorry_all_theorems(worktree: Path, file_path: str) -> int:
+    """Replace ALL theorem/lemma proof bodies in `file_path` with `sorry`.
+
+    Processes theorems back-to-front so character offsets remain valid.
+    Returns the number of theorems modified.
+    """
+    target = worktree / file_path
+    if not target.exists():
+        return 0
+
+    text = target.read_text(encoding="utf-8")
     lines = text.splitlines(keepends=True)
-    thm_re = re.compile(r"^\s*(?:theorem|lemma)\s+" + re.escape(thm_name) + r"\b")
 
-    for i, line in enumerate(lines):
-        if not thm_re.match(line):
-            continue
+    # Find all theorem/lemma start line indices (handles duplicate names in
+    # different namespaces, which name-based dedup would silently miss).
+    thm_line_re = re.compile(r"^\s*(?:theorem|lemma)\s+\w+\b")
+    thm_line_indices = [i for i, ln in enumerate(lines) if thm_line_re.match(ln)]
 
-        # Walk back to include @[...] and doc-comment lines
+    # Build replacement spans directly from line positions
+    replacements: list[tuple[int, int, str]] = []
+    for i in thm_line_indices:
+        # Walk back to include leading @[...] / doc-comment lines
         attr_start = i
         while attr_start > 0:
             prev = lines[attr_start - 1].strip()
@@ -225,7 +237,7 @@ def _find_theorem_span(text: str, thm_name: str) -> tuple[int, int] | None:
             else:
                 break
 
-        base_indent = len(line) - len(line.lstrip())
+        base_indent = len(lines[i]) - len(lines[i].lstrip())
 
         end = i + 1
         while end < len(lines):
@@ -239,35 +251,8 @@ def _find_theorem_span(text: str, thm_name: str) -> tuple[int, int] | None:
 
         start_char = sum(len(l) for l in lines[:attr_start])
         end_char   = sum(len(l) for l in lines[:end])
-        return start_char, end_char
+        block = text[start_char:end_char]
 
-    return None
-
-
-def inject_sorry_all_theorems(worktree: Path, file_path: str) -> int:
-    """Replace ALL theorem/lemma proof bodies in `file_path` with `sorry`.
-
-    Processes theorems back-to-front so character offsets remain valid.
-    Returns the number of theorems modified.
-    """
-    target = worktree / file_path
-    if not target.exists():
-        return 0
-
-    text = target.read_text(encoding="utf-8")
-
-    # Collect all theorem/lemma names in order of appearance
-    thm_re = re.compile(r"^\s*(?:theorem|lemma)\s+(\w+)\b", re.MULTILINE)
-    names = list(dict.fromkeys(thm_re.findall(text)))  # dedupe, preserve order
-
-    # Collect replacement spans
-    replacements: list[tuple[int, int, str]] = []
-    for name in names:
-        span = _find_theorem_span(text, name)
-        if span is None:
-            continue
-        start, end = span
-        block = text[start:end]
         by_match = re.search(r":=\s*by\b", block)
         if by_match is None:
             continue
@@ -276,7 +261,7 @@ def inject_sorry_all_theorems(worktree: Path, file_path: str) -> int:
         if proof_body == "sorry":
             continue
         new_block = block[: by_match.end()] + "\n  sorry\n"
-        replacements.append((start, end, new_block))
+        replacements.append((start_char, end_char, new_block))
 
     if not replacements:
         return 0
@@ -303,18 +288,24 @@ def inject_sorry_target(worktree: Path, entry: dict) -> bool:
 # git worktree helpers (same as eval_claude_code.py)
 # ---------------------------------------------------------------------------
 
-def create_worktree(commit: str) -> Path:
-    import tempfile
+def create_worktree(commit: str, entry_id: str) -> Path:
     worktrees_dir = REPO_ROOT.parent / "dalek-worktrees"
     worktrees_dir.mkdir(exist_ok=True)
-    tmp = Path(tempfile.mkdtemp(prefix="dalek-timeline-eval-", dir=worktrees_dir))
+    worktree = worktrees_dir / f"dalek-timeline-eval-{entry_id}"
+    if worktree.exists():
+        import shutil
+        shutil.rmtree(worktree)
+        subprocess.run(
+            ["git", "worktree", "prune"],
+            cwd=REPO_ROOT, capture_output=True,
+        )
     subprocess.run(
-        ["git", "worktree", "add", "--detach", str(tmp), commit],
+        ["git", "worktree", "add", "--detach", str(worktree), commit],
         cwd=REPO_ROOT,
         check=True,
         capture_output=True,
     )
-    return tmp
+    return worktree
 
 
 def remove_worktree(worktree: Path) -> None:
@@ -669,7 +660,7 @@ def evaluate_one(
     ).stdout.strip()
 
     try:
-        worktree = create_worktree(head)
+        worktree = create_worktree(head, entry["id"])
     except subprocess.CalledProcessError as e:
         result["error"] = f"worktree error: {e.stderr.decode()[:200]}"
         return result
