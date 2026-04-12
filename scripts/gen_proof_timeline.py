@@ -14,8 +14,18 @@ to fill in `lean_name` for old-schema entries.
 
 import csv
 import io
+import re
 import subprocess
 import sys
+from pathlib import Path
+
+
+def _spec_to_id(idx: int, spec: str) -> str:
+    """Build a stable eval ID from a row's sorted index and spec_theorem path."""
+    stem = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2",
+                  re.sub(r"([a-z\d])([A-Z])", r"\1_\2",
+                         Path(spec).stem)).lower()
+    return f"tl_{idx:04d}_{stem}"
 
 
 VERIFIED_STATUSES = {"verified", "externally verified"}
@@ -123,7 +133,13 @@ def main():
     # Sort by date_proven, then function
     rows = sorted(timeline.values(), key=lambda r: (r["date_proven"], r["function"]))
 
-    fieldnames = ["lean_name", "spec_theorem", "function", "verified", "date_proven", "commit_hash", "commit_message"]
+    # Assign stable eval IDs using each row's position in the full sorted list.
+    # Rows without a spec_theorem get an empty id (they are skipped during eval).
+    for idx, row in enumerate(rows):
+        spec = row.get("spec_theorem", "").strip()
+        row["id"] = _spec_to_id(idx, spec) if spec else ""
+
+    fieldnames = ["id", "lean_name", "spec_theorem", "function", "verified", "date_proven", "commit_hash", "commit_message"]
     with open(output_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()

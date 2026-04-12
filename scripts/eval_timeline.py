@@ -141,11 +141,14 @@ def load_timeline(csv_path: Path, dataset_path: Path) -> list[dict]:
         if not full_path.exists():
             continue
 
-        # Assign a stable, human-readable ID (CamelCase → snake_case)
-        stem = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2",
-                      re.sub(r"([a-z\d])([A-Z])", r"\1_\2",
-                             Path(spec).stem)).lower()
-        entry_id = f"tl_{idx:04d}_{stem}"
+        # Use pre-computed ID from CSV if present, otherwise derive it on the fly
+        # for backwards compatibility with old CSVs that lack the id column.
+        entry_id = row.get("id", "").strip()
+        if not entry_id:
+            stem = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2",
+                          re.sub(r"([a-z\d])([A-Z])", r"\1_\2",
+                                 Path(spec).stem)).lower()
+            entry_id = f"tl_{idx:04d}_{stem}"
 
         # Resolve theorem name: dataset first, then file parsing
         theorem_names = _resolve_theorem_names(spec, ds_by_path, full_path)
