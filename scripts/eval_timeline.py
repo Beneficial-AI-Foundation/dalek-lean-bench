@@ -31,7 +31,7 @@ Usage:
     python scripts/eval_timeline.py --limit 5
 
     # Specific entries by ID  (use --list to see all IDs)
-    python scripts/eval_timeline.py --ids tl_0004_clamp_integer tl_0006_to_bytes
+    python scripts/eval_timeline.py --ids tl_0244_mul_assign tl_0006_to_bytes
 
     # Resume a previous run
     python scripts/eval_timeline.py --output results/timeline-run.jsonl --resume
@@ -40,7 +40,7 @@ Usage:
     python scripts/eval_timeline.py --dry-run --limit 5
 
     # Keep worktree after evaluation (prints path; useful for debugging)
-    python scripts/eval_timeline.py --keep-worktree --ids tl_0004_clamp_integer
+    python scripts/eval_timeline.py --keep-worktree --ids tl_0244_mul_assign
 
     # Setup only: create worktree and inject sorries, skip agent and build
     python scripts/eval_timeline.py --setup-only --ids tl_0244_mul_assign
