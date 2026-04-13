@@ -379,12 +379,16 @@ def _hardlink_head_build(worktree: Path) -> None:
 # Final verification build (authoritative pass/fail)
 # ---------------------------------------------------------------------------
 
-def run_lake_build(worktree: Path, file_path: str, timeout: int | None = None) -> dict:
+def run_lake_build(worktree: Path, file_path: str, timeout: int | None = None, jobs: int | None = None) -> dict:
     module = file_path.replace("/", ".").removesuffix(".lean")
     t0 = time.time()
+    cmd = ["lake", "build"]
+    if jobs is not None:
+        cmd += ["-j", str(jobs)]
+    cmd.append(module)
     try:
         proc = subprocess.run(
-            ["lake", "build", module],
+            cmd,
             cwd=worktree,
             capture_output=True,
             text=True,
@@ -640,6 +644,7 @@ def evaluate_one(
     live: bool = False,
     keep_worktree: bool = False,
     setup_only: bool = False,
+    jobs: int | None = None,
 ) -> dict:
     result: dict = {
         "id": entry["id"],
@@ -717,7 +722,7 @@ def evaluate_one(
             result["extracted_proof"] = extract_proof_from_worktree(
                 worktree, entry["file_path"], entry["formal_statement"]
             )
-            build_res = run_lake_build(worktree, entry["file_path"], timeout=build_timeout)
+            build_res = run_lake_build(worktree, entry["file_path"], timeout=build_timeout, jobs=jobs)
             result["success"]      = build_res["success"]
             result["build_time_s"] = build_res["time_s"]
             result["build_stdout"] = build_res["stdout"]
@@ -762,7 +767,7 @@ def evaluate_one(
             result["extracted_proof"] = extract_proof_from_worktree(
                 worktree, entry["file_path"], entry["formal_statement"]
             )
-            build_res = run_lake_build(worktree, entry["file_path"], timeout=build_timeout)
+            build_res = run_lake_build(worktree, entry["file_path"], timeout=build_timeout, jobs=jobs)
             result["success"]      = build_res["success"]
             result["build_time_s"] = build_res["time_s"]
             result["build_stdout"] = build_res["stdout"]
@@ -808,6 +813,8 @@ def main() -> None:
                         help="Append to --output and skip already-evaluated IDs")
     parser.add_argument("--parallel", type=int, default=1, metavar="N",
                         help="Number of entries to evaluate concurrently (default: 1)")
+    parser.add_argument("--jobs", type=int, default=None, metavar="N",
+                        help="Number of parallel jobs for each lake build (default: lake's default)")
     parser.add_argument("--mode", default="head", choices=["head", "commit-before"],
                         help="Evaluation mode: 'head' (default) checks out HEAD and injects sorry "
                              "so all imports/specs are present; 'commit-before' checks out the "
@@ -886,6 +893,7 @@ def main() -> None:
             live=args.live,
             keep_worktree=args.keep_worktree,
             setup_only=args.setup_only,
+            jobs=args.jobs,
         )
 
     with open(output_path, "a", encoding="utf-8") as out_f:

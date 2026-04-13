@@ -391,12 +391,16 @@ def _seed_cache_from_head() -> None:
 # Final verification build
 # ---------------------------------------------------------------------------
 
-def run_lake_build(worktree: Path, file_path: str, timeout: int | None = None) -> dict:
+def run_lake_build(worktree: Path, file_path: str, timeout: int | None = None, jobs: int | None = None) -> dict:
     module = file_path.replace("/", ".").removesuffix(".lean")
     t0 = time.time()
+    cmd = ["lake", "build"]
+    if jobs is not None:
+        cmd += ["-j", str(jobs)]
+    cmd.append(module)
     try:
         proc = subprocess.run(
-            ["lake", "build", module],
+            cmd,
             cwd=worktree,
             capture_output=True,
             text=True,
@@ -624,6 +628,7 @@ def evaluate_one(
     live: bool = False,
     keep_worktree: bool = False,
     setup_only: bool = False,
+    jobs: int | None = None,
 ) -> dict:
     """Evaluate one timeline entry with the correct historical proof context."""
     result: dict = {
@@ -732,7 +737,7 @@ def evaluate_one(
             )
 
         # ── Final verification build ──────────────────────────────────────────
-        build_res = run_lake_build(worktree, entry["file_path"], timeout=build_timeout)
+        build_res = run_lake_build(worktree, entry["file_path"], timeout=build_timeout, jobs=jobs)
         result["success"]      = build_res["success"]
         result["build_time_s"] = build_res["time_s"]
         result["build_stdout"] = build_res["stdout"]
@@ -799,6 +804,10 @@ def main() -> None:
     parser.add_argument(
         "--parallel", type=int, default=1, metavar="N",
         help="Number of entries to evaluate concurrently (default: 1)",
+    )
+    parser.add_argument(
+        "--jobs", type=int, default=None, metavar="N",
+        help="Number of parallel jobs for each lake build (default: lake's default)",
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -898,6 +907,7 @@ def main() -> None:
             live=args.live,
             keep_worktree=args.keep_worktree,
             setup_only=args.setup_only,
+            jobs=args.jobs,
         )
 
     with open(output_path, "a", encoding="utf-8") as out_f:
