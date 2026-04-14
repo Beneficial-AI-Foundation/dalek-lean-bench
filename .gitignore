@@ -50,3 +50,4 @@ site/public/doc
 .DS_Store
 
 *.jsonl
+full_proof_recovery_benchmark
