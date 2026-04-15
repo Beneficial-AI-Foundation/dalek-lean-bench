@@ -33,6 +33,7 @@ This mirrors the proof context that was actually available when `B` was original
 | `dataset.jsonl` | 146 theorem–proof pairs extracted from git history |
 | `Curve25519Dalek/Specs/` | ~150 hand-written Lean 4 spec files (formal statements) |
 | `Curve25519Dalek/Funs.lean` | Auto-generated Lean translation of Rust via Aeneas |
+| `full_proof_recovery_benchmark/` | Generated snapshot: all proofs replaced by `sorry` (gitignored) |
 
 The underlying Lean project covers the full `curve25519-dalek` library: field arithmetic over GF(2²⁵⁵−19), scalar arithmetic, Edwards/Montgomery/Ristretto group operations, and scalar multiplication.
 
@@ -67,6 +68,20 @@ results/*.jsonl                    ← pass/fail per theorem, per model
 3. Run the **LLM agent** (e.g., Claude Code CLI) with a budget cap; the agent edits the spec file and runs `lake build` iteratively.
 4. Record **pass/fail**, agent wall time, token cost, and build output.
 5. Clean up the worktree.
+
+---
+
+## Full Proof Recovery Benchmark
+
+In addition to the timeline evaluation, the repository ships a script that generates a simpler **full proof recovery** benchmark: a standalone, buildable copy of the entire Lean project with every theorem and lemma proof body replaced by `sorry`.
+
+```bash
+python scripts/make_full_proof_recovery_benchmark.py
+```
+
+This writes to `full_proof_recovery_benchmark/` (gitignored). The directory is a complete Lake project — it copies `lakefile.toml`, `lean-toolchain`, and `lake-manifest.json` on first run, then updates only the `.lean` files on subsequent runs.
+
+**Use case**: evaluating a model's ability to fill in any single proof given the full library context, without the temporal ordering constraint of the timeline benchmark.
 
 ---
 
@@ -115,6 +130,16 @@ python scripts/eval_timeline.py --live --limit 2
 python scripts/eval_timeline.py --list
 ```
 
+### Inspect results
+
+```bash
+# Summary table for a completed run
+python scripts/show_results.py results/run-20260415.jsonl
+
+# Full detail for one entry (includes agent conversation)
+python scripts/show_results.py results/run-20260415.jsonl --id tl_0007_add
+```
+
 ---
 
 ## Repository Structure
@@ -130,11 +155,13 @@ python scripts/eval_timeline.py --list
 │   └── Tactics.lean           # Custom Lean tactics
 ├── curve25519-dalek/          # Rust source (git submodule, minimal modifications)
 ├── scripts/
-│   ├── eval_timeline.py       # Main benchmark harness (timeline-ordered evaluation)
-│   ├── eval.py                # Basic single-shot LLM evaluation
-│   ├── eval_claude_code.py    # Agentic evaluation (head / commit-before modes)
-│   ├── gen_proof_timeline.py  # Regenerate proof_timeline.csv from git history
-│   └── extract_dataset.py     # Extract dataset.jsonl from git history
+│   ├── eval_timeline.py                    # Main benchmark harness (timeline-ordered evaluation)
+│   ├── eval.py                             # Basic single-shot LLM evaluation
+│   ├── eval_claude_code.py                 # Agentic evaluation (head / commit-before modes)
+│   ├── gen_proof_timeline.py               # Regenerate proof_timeline.csv from git history
+│   ├── extract_dataset.py                  # Extract dataset.jsonl from git history
+│   ├── make_full_proof_recovery_benchmark.py  # Generate full_proof_recovery_benchmark/
+│   └── show_results.py                     # Human-readable viewer for result JSONL files
 ├── proof_timeline.csv         # 249-entry ordered proof history
 ├── dataset.jsonl              # 146 theorem–proof pairs for training/eval
 ├── status.csv                 # Current verification status of all 197 functions
@@ -152,6 +179,8 @@ python scripts/eval_timeline.py --list
 | `eval.py` | Single-shot LLM evaluation on `dataset.jsonl` entries |
 | `gen_proof_timeline.py` | Rebuild `proof_timeline.csv` by walking git history |
 | `extract_dataset.py` | Build `dataset.jsonl` by scanning git history for sorry→proof transitions |
+| `make_full_proof_recovery_benchmark.py` | Generate `full_proof_recovery_benchmark/` — a standalone buildable project with all proofs replaced by `sorry` |
+| `show_results.py` | Pretty-print a `results/*.jsonl` file as a summary table or per-entry detail |
 
 ---
 
