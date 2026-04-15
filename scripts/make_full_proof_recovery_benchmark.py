@@ -23,7 +23,7 @@ OUTPUT_DIR = REPO_ROOT / "full_proof_recovery_benchmark"
 # Regex to detect the start of a top-level Lean declaration (used to find
 # where one theorem/lemma block ends and the next begins).
 _TOP_LEVEL_RE = re.compile(
-    r"^(theorem|lemma|def |abbrev |instance |class |structure |private |protected |"
+    r"^(theorem|lemma|def\b|abbrev |instance |class |structure |private |protected |"
     r"axiom |opaque |@\[|end |namespace |section |#check|#eval|#print|variable |open |"
     r"set_option |noncomputable )"
 )
@@ -116,26 +116,13 @@ def _inject_sorry(text: str) -> str:
 # Directory construction
 # ---------------------------------------------------------------------------
 
-# Project configuration files that must be present for `lake build` to work.
-_CONFIG_FILES = [
-    "lakefile.toml",
-    "lean-toolchain",
-    "lake-manifest.json",
-]
-
 def _build_benchmark(src: Path, dst: Path) -> int:
-    """Copy the Lean project from *src* to *dst* with sorrys injected.
+    """Inject sorrys into all .lean files from *src* and write them to *dst*.
 
+    Only .lean files are written; config files and .lake are never touched.
     Returns the number of .lean files written.
     """
     dst.mkdir(parents=True, exist_ok=True)
-
-    # Copy project config verbatim.
-    for name in _CONFIG_FILES:
-        src_file = src / name
-        if src_file.exists():
-            shutil.copy2(src_file, dst / name)
-            print(f"  config  {name}")
 
     # Discover and process all .lean files outside .lake/.
     count = 0
@@ -184,11 +171,19 @@ def _ensure_gitignore(repo_root: Path, entry: str) -> None:
 def main() -> None:
     print(f"Output directory : {OUTPUT_DIR}")
 
-    if OUTPUT_DIR.exists():
-        print("Removing existing output directory …")
-        shutil.rmtree(OUTPUT_DIR)
+    first_run = not OUTPUT_DIR.exists()
+    if first_run:
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        print("First run — copying project config files …")
+        for name in ["lakefile.toml", "lean-toolchain", "lake-manifest.json"]:
+            src_file = REPO_ROOT / name
+            if src_file.exists():
+                shutil.copy2(src_file, OUTPUT_DIR / name)
+                print(f"  config  {name}")
+    else:
+        print("Output directory exists — skipping config files, updating .lean files only …")
 
-    print("Copying and injecting sorrys …")
+    print("Injecting sorrys into .lean files …")
     n = _build_benchmark(REPO_ROOT, OUTPUT_DIR)
     print(f"Wrote {n} Lean files with proofs replaced by sorry")
 

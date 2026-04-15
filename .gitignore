@@ -51,3 +51,4 @@ site/public/doc
 
 *.jsonl
 full_proof_recovery_benchmark
+full_proof_recovery_benchmark_back

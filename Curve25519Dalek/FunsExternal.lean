@@ -1107,7 +1107,7 @@ def montgomery.ProjectivePoint.Insts.SubtleConditionallySelectable.conditional_s
   (a b : montgomery.ProjectivePoint) (choice : subtle.Choice)
   : Result (montgomery.ProjectivePoint × montgomery.ProjectivePoint) :=
   if choice.val = 1#u8 then ok (b, a) else ok (a, b)
-  
+
 /-
 def montgomery.ProjectivePoint.Insts.SubtleConditionallySelectable.conditional_swap
   (a : montgomery.ProjectivePoint) (b : montgomery.ProjectivePoint)
