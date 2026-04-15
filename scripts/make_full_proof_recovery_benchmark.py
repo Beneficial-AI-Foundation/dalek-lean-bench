@@ -25,13 +25,41 @@ OUTPUT_DIR = REPO_ROOT / "full_proof_recovery_benchmark"
 _TOP_LEVEL_RE = re.compile(
     r"^(theorem|lemma|def\b|abbrev |instance |class |structure |private |protected |"
     r"axiom |opaque |@\[|end |namespace |section |#check|#eval|#print|variable |open |"
-    r"set_option |noncomputable )"
+    r"set_option |noncomputable |/-)"
 )
 
 
 # ---------------------------------------------------------------------------
 # Sorry injection
 # ---------------------------------------------------------------------------
+
+def _block_comment_lines(lines: list[str]) -> set[int]:
+    """Return the set of 0-based line indices that lie inside /- … -/ block comments.
+
+    Handles nested block comments and respects -- line comments.
+    Lines that are inside commented-out code regions should not be processed
+    for sorry injection.
+    """
+    inside: set[int] = set()
+    depth = 0
+    for idx, line in enumerate(lines):
+        if depth > 0:
+            inside.add(idx)
+        i = 0
+        while i < len(line):
+            if line[i:i+2] == "/-":
+                depth += 1
+                i += 2
+            elif line[i:i+2] == "-/":
+                if depth > 0:
+                    depth -= 1
+                i += 2
+            elif line[i:i+2] == "--" and depth == 0:
+                break  # rest of line is a line comment
+            else:
+                i += 1
+    return inside
+
 
 def _inject_sorry(text: str) -> str:
     """Return `text` with every theorem/lemma proof body replaced by `sorry`.
@@ -42,9 +70,16 @@ def _inject_sorry(text: str) -> str:
     """
     lines = text.splitlines(keepends=True)
 
+    # Pre-compute which lines are inside /- … -/ block comments so we skip
+    # theorem/lemma declarations that are inside commented-out code regions.
+    block_commented = _block_comment_lines(lines)
+
     # Line indices where a theorem or lemma declaration begins.
     thm_line_re = re.compile(r"^\s*(?:theorem|lemma)\s+\w+\b")
-    thm_indices = [i for i, ln in enumerate(lines) if thm_line_re.match(ln)]
+    thm_indices = [
+        i for i, ln in enumerate(lines)
+        if thm_line_re.match(ln) and i not in block_commented
+    ]
 
     replacements: list[tuple[int, int, str]] = []
 
@@ -88,10 +123,18 @@ def _inject_sorry(text: str) -> str:
             continue
 
         # ── Term-mode proof: := <expr> ────────────────────────────────────
-        # Find := that is NOT immediately followed by 'by'.
-        # In theorem/lemma signatures the only := is the one introducing the
-        # proof body, so the first match is the right one.
-        term_match = re.search(r":=(?!\s*by\b)", block)
+        # Find the := that introduces the proof body.  We skip any := that
+        # appears on a line whose content (before the :=) starts with `let`
+        # or `have` — those are local bindings inside the *type*, not the
+        # proof-introducing :=.
+        term_match = None
+        for m in re.finditer(r":=(?!\s*by\b)", block):
+            line_start = block.rfind("\n", 0, m.start()) + 1
+            before = block[line_start : m.start()]
+            if re.match(r"\s*(let|have)\s", before):
+                continue  # binding inside the type signature — skip
+            term_match = m
+            break
         if term_match is not None:
             proof_body = block[term_match.end():].strip()
             if proof_body == "sorry":
