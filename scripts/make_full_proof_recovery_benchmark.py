@@ -15,6 +15,7 @@ full_proof_recovery_benchmark/ is listed in .gitignore.
 
 import re
 import shutil
+import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -193,6 +194,28 @@ def _build_benchmark(src: Path, dst: Path) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Git helpers
+# ---------------------------------------------------------------------------
+
+def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True)
+
+
+def _commit_config_files(repo: Path, files: list[str]) -> None:
+    """Stage *files* that exist in *repo* and commit them if anything changed."""
+    to_add = [f for f in files if (repo / f).exists()]
+    if not to_add:
+        return
+    _git(["add"] + to_add, cwd=repo)
+    result = _git(["diff", "--cached", "--quiet"], cwd=repo)
+    if result.returncode == 0:
+        print("Config files already committed, nothing to commit.")
+        return
+    _git(["commit", "-m", "chore: add project config files"], cwd=repo)
+    print(f"Committed config files: {', '.join(to_add)}")
+
+
+# ---------------------------------------------------------------------------
 # .gitignore update
 # ---------------------------------------------------------------------------
 
@@ -226,9 +249,28 @@ def main() -> None:
     else:
         print("Output directory exists — skipping config files, updating .lean files only …")
 
+    # Always copy .gitignore so .lake build artefacts are ignored inside the
+    # output directory regardless of whether this is a first or subsequent run.
+    gitignore_src = REPO_ROOT / ".gitignore"
+    if gitignore_src.exists():
+        shutil.copy2(gitignore_src, OUTPUT_DIR / ".gitignore")
+        print("  config  .gitignore")
+
+    _commit_config_files(
+        OUTPUT_DIR,
+        [".gitignore", "lakefile.toml", "lean-toolchain", "lake-manifest.json"],
+    )
+
     print("Injecting sorrys into .lean files …")
     n = _build_benchmark(REPO_ROOT, OUTPUT_DIR)
     print(f"Wrote {n} Lean files with proofs replaced by sorry")
+
+    # Create a backup of the sorry-injected files so that
+    # check_full_proof_recovery.py can use it as a baseline.
+    backup_dir = OUTPUT_DIR / "full_proof_recovery_benchmark_back"
+    print(f"Creating baseline backup in {backup_dir} …")
+    _build_benchmark(REPO_ROOT, backup_dir)
+    print("Baseline backup written.")
 
     _ensure_gitignore(REPO_ROOT, "full_proof_recovery_benchmark")
     print("Done.")
