@@ -54,6 +54,7 @@ Environment variables:
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import re
@@ -205,6 +206,47 @@ _TOP_LEVEL_RE = re.compile(
     r"@\[|end |namespace |section |#check|#eval|#print|variable |open |set_option |"
     r"noncomputable )"
 )
+
+# ---------------------------------------------------------------------------
+# Sorry-state helpers — used to verify agent behaviour post-run
+# ---------------------------------------------------------------------------
+
+_SORRY_TACTIC_RE = re.compile(r"^\s+sorry\s*$", re.MULTILINE)
+_SORRY_TERM_RE   = re.compile(r":=\s*sorry\s*$", re.MULTILINE)
+
+
+def _file_sorry_count(path: Path) -> int:
+    """Count injected-sorry patterns (tactic or term mode) in one file."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+    return (
+        len(_SORRY_TACTIC_RE.findall(text))
+        + len(_SORRY_TERM_RE.findall(text))
+    )
+
+
+def _worktree_sorry_files(worktree: Path) -> set[str]:
+    """Return relative paths of all project .lean files that contain sorry."""
+    found: set[str] = set()
+    for lean_file in worktree.rglob("*.lean"):
+        if ".lake" in lean_file.parts:
+            continue
+        if _file_sorry_count(lean_file) > 0:
+            found.add(str(lean_file.relative_to(worktree)))
+    return found
+
+
+def _sorry_id(file_path: str, theorem_name: str) -> str:
+    """Stable lightweight ID: sha256(file_path::theorem_name)[:16].
+
+    A content-independent proxy for the sorry's identity.  The REPL-elaborated
+    goal hash (from extract_sorries_repl.py) is more accurate but requires a
+    full lake build + REPL startup per evaluation step; this is the fast path.
+    """
+    key = f"{file_path}::{theorem_name}".encode()
+    return hashlib.sha256(key).hexdigest()[:16]
 
 
 def inject_sorry_all_theorems(worktree: Path, file_path: str) -> int:
@@ -651,6 +693,12 @@ def evaluate_one(
         "build_stdout":   "",
         "build_stderr":   "",
         "n_later_files_sorried": 0,
+        # Sorry-identity and integrity fields
+        "target_sorry_ids":       [],   # sha256(file::theorem)[:16] per target theorem
+        "sorry_count_before":     None, # sorries in target file after injection, before agent
+        "sorry_count_after":      None, # sorries in target file after agent
+        "new_sorries_introduced": None, # True if agent planted sorry in unexpected files
+        "unexpected_sorry_files": [],   # files that gained sorry unexpectedly
         "error":          None,
     }
 
@@ -713,6 +761,16 @@ def evaluate_one(
             )
             return result
 
+        # ── Record sorry identity before the agent runs ───────────────────────
+        # One stable ID per targeted theorem: sha256(file::theorem_name)[:16].
+        # This is a fast, REPL-free proxy; for the full elaborated-goal hash
+        # use extract_sorries_repl.py separately on the worktree.
+        theorem_names = entry.get("theorem_names") or ["(unknown)"]
+        result["target_sorry_ids"]   = [
+            _sorry_id(entry["file_path"], n) for n in theorem_names
+        ]
+        result["sorry_count_before"] = _file_sorry_count(worktree / entry["file_path"])
+
         if setup_only:
             print(f"[setup-only] {entry['id']}: {worktree}")
             result["error"] = "setup-only: skipped agent and build"
@@ -738,10 +796,29 @@ def evaluate_one(
 
         # ── Final verification build ──────────────────────────────────────────
         build_res = run_lake_build(worktree, entry["file_path"], timeout=build_timeout, jobs=jobs)
-        result["success"]      = build_res["success"]
         result["build_time_s"] = build_res["time_s"]
         result["build_stdout"] = build_res["stdout"]
         result["build_stderr"] = build_res["stderr"]
+
+        # ── Verify the agent proved only the target sorry (no new ones) ───────
+        result["sorry_count_after"] = _file_sorry_count(worktree / entry["file_path"])
+
+        # Files that are expected to still have sorries after the agent runs:
+        # the later-timeline files that were sorry-injected by the harness.
+        # The target file itself is NOT in this set — the agent must clear it.
+        allowed_sorry_files: set[str] = later_files_to_sorry
+        actual_sorry_files = _worktree_sorry_files(worktree)
+        unexpected = actual_sorry_files - allowed_sorry_files - {entry["file_path"]}
+        result["new_sorries_introduced"] = bool(unexpected)
+        result["unexpected_sorry_files"] = sorted(unexpected)
+
+        if unexpected and not result.get("error"):
+            result["error"] = (
+                "agent introduced sorry in unexpected file(s): "
+                + ", ".join(sorted(unexpected))
+            )
+
+        result["success"] = build_res["success"] and not bool(unexpected)
 
     finally:
         if keep_worktree or setup_only:

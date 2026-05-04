@@ -85,6 +85,54 @@ This writes to `full_proof_recovery_benchmark/` (gitignored). The directory is a
 
 ---
 
+## Sorry Extraction via the Lean REPL
+
+`scripts/extract_sorries_repl.py` uses the [Lean REPL](https://github.com/leanprover-community/repl) to elaborate every `sorry` in a project and capture its **proof state** — the full elaborated goal string as Lean sees it, not just the raw source text.
+
+Each sorry is assigned a **stable content-based id**: the first 16 hex characters of `sha256(goal_string)`. Because the id depends only on the elaborated goal and not on file path or line number, the same sorry retains the same id across refactors and renames.
+
+```bash
+# Scan full_proof_recovery_benchmark/ (default)
+python scripts/extract_sorries_repl.py
+
+# Scan a different project, write output elsewhere
+python scripts/extract_sorries_repl.py path/to/project output/
+
+# Include non-Prop sorries (term-mode holes in def bodies)
+python scripts/extract_sorries_repl.py --all
+
+# Skip lake build when oleans are already up to date
+python scripts/extract_sorries_repl.py --no-build
+```
+
+On first run the script clones and builds the REPL at the version matching `lean-toolchain`; subsequent runs reuse the cached binary from `lean_data/`.
+
+**Outputs** (written into the project directory by default):
+
+| File | Contents |
+|---|---|
+| `sorries.jsonl` | One JSON record per sorry (see schema below) |
+| `sorries_summary.json` | Total count, unique goal hashes, and per-file breakdown |
+
+**Record schema** (`sorries.jsonl`):
+
+```jsonc
+{
+  "id":           "a3f1b2c4d5e6f789",   // first 16 hex chars of sha256(goal)
+  "file":         "Curve25519Dalek/Funs.lean",
+  "lean_version": "v4.28.0-rc1",
+  "location": {
+    "start_line": 42, "start_column": 4,
+    "end_line":   42, "end_column":   9
+  },
+  "goal": "⊢ a + b = b + a"
+}
+```
+
+By default only `Prop`-typed goals are included (theorem / lemma bodies). Pass `--all` to also capture term-mode holes.
+
+---
+
 ## Quick Start
 
 ### Prerequisites
@@ -161,6 +209,7 @@ python scripts/show_results.py results/run-20260415.jsonl --id tl_0007_add
 │   ├── gen_proof_timeline.py               # Regenerate proof_timeline.csv from git history
 │   ├── extract_dataset.py                  # Extract dataset.jsonl from git history
 │   ├── make_full_proof_recovery_benchmark.py  # Generate full_proof_recovery_benchmark/
+│   ├── extract_sorries_repl.py             # Extract & hash every sorry via the Lean REPL
 │   └── show_results.py                     # Human-readable viewer for result JSONL files
 ├── proof_timeline.csv         # 249-entry ordered proof history
 ├── dataset.jsonl              # 146 theorem–proof pairs for training/eval
@@ -180,6 +229,7 @@ python scripts/show_results.py results/run-20260415.jsonl --id tl_0007_add
 | `gen_proof_timeline.py` | Rebuild `proof_timeline.csv` by walking git history |
 | `extract_dataset.py` | Build `dataset.jsonl` by scanning git history for sorry→proof transitions |
 | `make_full_proof_recovery_benchmark.py` | Generate `full_proof_recovery_benchmark/` — a standalone buildable project with all proofs replaced by `sorry` |
+| `extract_sorries_repl.py` | Extract every `sorry` via the Lean REPL; hash each proof state with SHA-256 for a stable content-based id |
 | `show_results.py` | Pretty-print a `results/*.jsonl` file as a summary table or per-entry detail |
 
 ---

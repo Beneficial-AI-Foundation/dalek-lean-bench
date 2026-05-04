@@ -139,18 +139,33 @@ def print_summary(results: list[dict]) -> None:
     n_pass = sum(1 for r in results if r["success"])
     n_total = len(results)
     pct = f"{100 * n_pass / n_total:.1f}%" if n_total else "n/a"
+    has_integrity = any("new_sorries_introduced" in r for r in results)
 
-    print(f"{'ID':<40} {'STATUS':<6} {'AGENT':>8} {'BUILD':>7}  ERROR")
-    print("-" * 90)
+    hdr = f"{'ID':<40} {'STATUS':<6} {'AGENT':>8} {'BUILD':>7}"
+    if has_integrity:
+        hdr += f"  {'B4':>3} {'AFT':>3}  {'NEW?':<5}"
+    hdr += "  ERROR"
+    print(hdr)
+    print("-" * (len(hdr) + 10))
     for r in results:
         err = (r.get("error") or "")[:50]
-        print(
+        row = (
             f"{r['id']:<40} {status(r):<15} "
             f"{fmt_time(r.get('agent_time_s')):>8} "
-            f"{fmt_time(r.get('build_time_s')):>7}  "
-            f"{err}"
+            f"{fmt_time(r.get('build_time_s')):>7}"
         )
-    print("-" * 90)
+        if has_integrity:
+            b4  = r.get("sorry_count_before")
+            aft = r.get("sorry_count_after")
+            new = r.get("new_sorries_introduced")
+            row += (
+                f"  {str(b4) if b4 is not None else '-':>3}"
+                f" {str(aft) if aft is not None else '-':>3}"
+                f"  {'YES' if new else ('no' if new is not None else '-'):<5}"
+            )
+        row += f"  {err}"
+        print(row)
+    print("-" * (len(hdr) + 10))
     print(f"pass@1: {n_pass}/{n_total} ({pct})")
 
 
@@ -158,14 +173,26 @@ def print_detail(r: dict, show_agent: bool = True) -> None:
     sep = "=" * 70
     print(sep)
     print(f"ID:        {r['id']}")
-    print(f"Theorem:   {r['theorem_name']}")
-    print(f"File:      {r['file_path']}")
-    print(f"Commit:    {r['commit_before']}")
+    # Support both eval_timeline.py format and older eval_claude_code.py format
+    theorems = r.get("theorem_names") or ([r["theorem_name"]] if "theorem_name" in r else [])
+    print(f"Theorems:  {', '.join(theorems) or '(unknown)'}")
+    print(f"File:      {r.get('file_path', r.get('spec_theorem', '?'))}")
+    commit = r.get("commit_hash") or r.get("commit_before", "?")
+    print(f"Commit:    {commit}")
     print(f"Model:     {r['model']}")
     print(f"Timestamp: {r['timestamp']}")
     print(f"Status:    {status(r)}")
     print(f"Agent:     {fmt_time(r.get('agent_time_s'))}  exit={r.get('agent_exit_code')}  timed_out={r.get('agent_timed_out')}")
     print(f"Build:     {fmt_time(r.get('build_time_s'))}")
+
+    # Sorry integrity fields (present in timeline results)
+    if "target_sorry_ids" in r:
+        ids_str = ", ".join(r["target_sorry_ids"]) or "(none)"
+        print(f"Sorry IDs: {ids_str}")
+    if r.get("sorry_count_before") is not None:
+        print(f"Sorries:   before={r['sorry_count_before']}  after={r.get('sorry_count_after', '?')}")
+    if r.get("new_sorries_introduced") is True:
+        print(f"NEW SORRY: {r.get('unexpected_sorry_files', [])}")
 
     if r.get("error"):
         print(f"Error:     {r['error']}")
